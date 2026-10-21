@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Экспорт фасадов — настройки</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --panel: #ffffff;
+    --line: #dcdfe4;
+    --text: #23272e;
+    --muted: #6b7280;
+    --accent: #1f6feb;
+    --accent-dark: #1857bd;
+    --ok: #0f9d58;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font: 13px/1.45 -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  }
+  body { display: flex; flex-direction: column; }
+  header {
+    padding: 12px 18px 0 18px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { margin: 0 0 2px 0; font-size: 15px; font-weight: 600; }
+  header p { margin: 0 0 10px 0; color: var(--muted); font-size: 12px; }
+  nav { display: flex; gap: 2px; flex-wrap: wrap; }
+  nav button {
+    border: 1px solid transparent;
+    border-bottom: none;
+    background: transparent;
+    color: var(--muted);
+    padding: 7px 13px;
+    font: inherit;
+    border-radius: 6px 6px 0 0;
+    cursor: pointer;
+  }
+  nav button:hover { background: #eef1f5; color: var(--text); }
+  nav button.active {
+    background: var(--bg);
+    border-color: var(--line);
+    color: var(--text);
+    font-weight: 600;
+    margin-bottom: -1px;
+  }
+  main { flex: 1 1 auto; overflow: auto; padding: 16px 18px 24px 18px; }
+  section.tab { display: none; }
+  section.tab.active { display: block; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+  }
+  .card h2 {
+    margin: 0 0 10px 0;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 22px; }
+  .grid.one { grid-template-columns: minmax(0, 1fr); }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 12px; color: #3b4149; }
+  .field input[type="number"], .field input[type="text"], .field select {
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font: inherit;
+    background: #fff;
+    color: var(--text);
+    width: 100%;
+  }
+  .field input:focus, .field select:focus {
+    outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(31,111,235,.15);
+  }
+  .check { display: flex; align-items: flex-start; gap: 8px; padding: 3px 0; }
+  .check input { margin-top: 2px; }
+  .check span { font-size: 12.5px; }
+  .hint { color: var(--muted); font-size: 11.5px; margin-top: 4px; }
+  .row-inline { display: flex; align-items: center; gap: 8px; }
+  .swatch {
+    width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--line);
+    flex: 0 0 auto;
+  }
+  code { background: #eef1f5; padding: 1px 5px; border-radius: 4px; font-size: 11.5px; }
+  footer {
+    display: flex; gap: 8px; align-items: center;
+    padding: 10px 18px; background: var(--panel);
+    border-top: 1px solid var(--line);
+  }
+  footer .spacer { flex: 1 1 auto; }
+  footer button {
+    padding: 7px 16px; border-radius: 6px; border: 1px solid var(--line);
+    background: #fff; color: var(--text); font: inherit; cursor: pointer;
+  }
+  footer button:hover { background: #f0f2f5; }
+  footer button.primary {
+    background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
+  }
+  footer button.primary:hover { background: var(--accent-dark); }
+  .badge {
+    display: inline-block; font-size: 11px; color: var(--ok);
+    border: 1px solid rgba(15,157,88,.35); background: rgba(15,157,88,.08);
+    border-radius: 20px; padding: 1px 8px; margin-left: 6px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Экспорт фасадов — настройки</h1>
+  <p>Значения по умолчанию соответствуют заданию: PNG 9999&nbsp;пикс., высота автоматически,
+     множитель линий 0,3x, без сглаживания, прозрачный фон.</p>
+  <nav id="tabs"></nav>
+</header>
+
+<main id="content"></main>
+
+<footer>
+  <button id="btn-reset" type="button">Вернуть значения по умолчанию</button>
+  <span class="spacer"></span>
+  <button id="btn-cancel" type="button">Отмена</button>
+  <button id="btn-save" class="primary" type="button">Сохранить</button>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  var settings = null;
+  var RENDER_MODES = [
+    ["shaded", "Затенение"],
+    ["hidden", "Скрытые линии"],
+    ["wireframe", "Каркас"],
+    ["monochrome", "Монохромный"]
+  ];
+
+  function getPath(obj, path) {
+    var parts = path.split('.');
+    var cur = obj;
+    for (var i = 0; i < parts.length; i++) {
+      if (cur === null || cur === undefined) return undefined;
+      cur = cur[parts[i]];
+    }
+    return cur;
+  }
+
+  function setPath(obj, path, value) {
+    var parts = path.split('.');
+    var cur = obj;
+    for (var i = 0; i < parts.length - 1; i++) {
+      if (cur[parts[i]] === null || typeof cur[parts[i]] !== 'object') cur[parts[i]] = {};
+      cur = cur[parts[i]];
+    }
+    cur[parts[parts.length - 1]] = value;
+  }
+
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function numberField(path, label, min, max, step, hint) {
+    return '<div class="field"><label>' + esc(label) + '</label>' +
+      '<input type="number" data-path="' + path + '" data-kind="number" min="' + min +
+      '" max="' + max + '" step="' + (step || 1) + '">' +
+      (hint ? '<div class="hint">' + hint + '</div>' : '') + '</div>';
+  }
+
+  function textField(path, label, hint) {
+    return '<div class="field"><label>' + esc(label) + '</label>' +
+      '<input type="text" data-path="' + path + '">' +
+      (hint ? '<div class="hint">' + hint + '</div>' : '') + '</div>';
+  }
+
+  function checkField(path, label, hint) {
+    return '<div class="check"><input type="checkbox" data-path="' + path + '">' +
+      '<span>' + esc(label) + (hint ? '<div class="hint">' + hint + '</div>' : '') + '</span></div>';
+  }
+
+  function selectField(path, label, options) {
+    var html = '<div class="field"><label>' + esc(label) + '</label>' +
+      '<select data-path="' + path + '">';
+    options.forEach(function (opt) {
+      html += '<option value="' + esc(opt[0]) + '">' + esc(opt[1]) + '</option>';
+    });
+    return html + '</select></div>';
+  }
+
+  /* ------------------------------------------------ вкладка «Экспорт» */
+  function exportTab() {
+    var html = '';
+    html += '<section class="tab" id="tab-export">';
+
+    html += '<div class="card"><h2>Изображение (PNG)</h2><div class="grid">';
+    html += numberField('export.width', 'Ширина, пикс.', 100, 16000, 1,
+      'По умолчанию 9999 пикс. (максимум SketchUp — 16000).');
+    html += numberField('export.height', 'Высота, пикс.', 0, 16000, 1,
+      '0 — высота вычисляется автоматически по пропорциям окна просмотра.');
+    html += numberField('export.line_scale', 'Множитель масштаба линии', 0.01, 10, 0.05,
+      'Как в окне экспорта SketchUp. По умолчанию 0,3x.');
+    html += numberField('export.margin', 'Отступ вокруг фасада (доля кадра)', 0, 0.3, 0.01,
+      '0,04 = 4 % с каждой стороны, чтобы ничего не обрезалось.');
+    html += '</div><div class="grid one" style="margin-top:10px">';
+    html += checkField('export.use_view_size', 'Использовать размер вида',
+      'По заданию — выключено: размер берётся из полей ширины и высоты (9999 пикс.), а не из окна.');
+    html += checkField('export.antialias', 'Сглаживание (antialias)',
+      'По заданию — выключено.');
+    html += checkField('export.transparent', 'Прозрачный фон',
+      'По заданию — включено.');
+    html += checkField('export.perspective', 'Параллельная проекция',
+      'По заданию — включена (перспектива выключена).');
+    html += '</div></div>';
+
+    html += '<div class="card"><h2>Стиль на время экспорта</h2><div class="grid one">';
+    html += '<div class="hint">Фон всегда полностью белый: RGB 255, 255, 255. ' +
+            'Небо и земля выключаются, если не отмечено обратное ниже.</div>';
+    html += checkField('export.show_sky', 'Оставлять небо');
+    html += checkField('export.show_ground', 'Оставлять землю');
+    html += checkField('export.hide_guides', 'Скрывать направляющие',
+      'Меню «Вид» → «Направляющие».');
+    html += checkField('export.hide_annotations', 'Скрывать оси, размеры и тексты',
+      'Чтобы на картах не было лишних линий.');
+    html += checkField('export.hide_watermarks', 'Скрывать водяные знаки');
+    html += checkField('export.disable_section_cuts', 'Отключать сечения',
+      'Чтобы плоскости сечения не подрезали фасад на экспорте.');
+    html += '<div class="hint">Профили, показ глубин, расширение, конечные точки, ' +
+            'дрожание, пунктир, силуэты, задние рёбра и рентген отключаются всегда ' +
+            '(как в задании).</div>';
+    html += '</div></div>';
+
+    html += '<div class="card"><h2>Тени и поведение</h2><div class="grid">';
+    html += numberField('export.shadow_light', '«Светлее»', 0, 100, 1, 'Лоток «Тени», по умолчанию 100.');
+    html += numberField('export.shadow_dark', '«Темнее»', 0, 100, 1, 'Лоток «Тени», по умолчанию 0.');
+    html += '</div><div class="grid one" style="margin-top:10px">';
+    html += checkField('export.sun_for_shading', 'Использовать солнце для затенения',
+      'По заданию — выключено.');
+    html += checkField('export.restore_view', 'Возвращать вид и стиль после экспорта',
+      'Вьюпорт остаётся таким, каким был до нажатия кнопки.');
+    html += checkField('export.show_report', 'Показывать отчёт после экспорта');
+    html += '<div class="hint">Имя файлов: <code>Имя_Фасад_Номер_Карта.png</code>, ' +
+            'например <code>Заречная_Фасад_1_Текстура.png</code>.</div>';
+    html += '</div></div>';
+
+    html += '</section>';
+    return html;
+  }
+
+  /* ------------------------------------------------- вкладки карт */
+  function mapTab(map, index) {
+    var p = 'maps.' + index + '.';
+    var html = '<section class="tab" id="tab-map-' + index + '">';
+
+    html += '<div class="card"><h2>Карта «' + esc(map.title) + '»</h2><div class="grid">';
+    html += textField(p + 'title', 'Название карты (в имени файла)');
+    html += selectField(p + 'render_mode', 'Режим отображения (вкладка «Правка → Грань»)', RENDER_MODES);
+    html += '</div><div class="grid" style="margin-top:10px">';
+    html += checkField(p + 'enabled', 'Экспортировать эту карту');
+    html += checkField(p + 'textures', 'Текстуры');
+    html += checkField(p + 'edges', 'Края (линии)', 'Вкладка «Правка → Край».');
+    html += checkField(p + 'shadows', 'Тени', 'Лоток «Тени» → «Показать тени».');
+    html += checkField(p + 'material_transparency', 'Прозрачность материала',
+      '«Правка → Грань → Прозрачность материала».');
+    html += checkField(p + 'sun_for_shading', 'Использовать солнце для затенения');
+    html += '</div></div>';
+
+    // Тени
+    html += '<div class="card"><h2>Солнце и тени</h2><div class="grid">';
+    html += numberField(p + 'shadow_azimuth', 'Смещение солнца влево, °', 0, 90, 1,
+      '45° — солнце слева сверху, тени падают вправо вниз.');
+    html += numberField(p + 'shadow_elevation', 'Высота солнца, °', 5, 89, 1,
+      '45° — тени под 45° к горизонту (как Elevation 45 Shadows).');
+    html += numberField(p + 'shadow_light', '«Светлее»', 0, 100, 1);
+    html += numberField(p + 'shadow_dark', '«Темнее»', 0, 100, 1);
+    html += '</div></div>';
+
+    // Стекло
+    html += '<div class="card"><h2>Прозрачные материалы (окна)</h2><div class="grid one">';
+    html += checkField(p + 'highlight_transparent',
+      'Перекрашивать материалы с непрозрачностью меньше 100 %',
+      'Цвет задаётся по HLS, как в «Материалы → Правка материала». ' +
+      'После экспорта исходные цвета возвращаются.');
+    html += '</div><div class="grid" style="margin-top:10px">';
+    html += numberField(p + 'glass_h', 'H (тон)', 0, 360, 1);
+    html += numberField(p + 'glass_s', 'S (насыщенность), %', 0, 100, 1);
+    html += numberField(p + 'glass_l', 'L (яркость), %', 0, 100, 1);
+    html += '<div class="field"><label>Предпросмотр цвета</label>' +
+            '<div class="row-inline"><div class="swatch" id="swatch-' + index + '"></div>' +
+            '<span class="hint">контрастен белому фону и тёмным линиям</span></div></div>';
+    html += '</div></div>';
+
+    html += '</section>';
+    return html;
+  }
+
+  /* ------------------------------------------------------ отрисовка */
+
+  function render() {
+    var content = document.getElementById('content');
+    var tabs = document.getElementById('tabs');
+    var html = exportTab();
+    var tabsHtml = '<button type="button" data-tab="export" class="active">Экспорт</button>';
+
+    settings.maps.forEach(function (map, i) {
+      html += mapTab(map, i);
+      tabsHtml += '<button type="button" data-tab="map-' + i + '">' + esc(map.title) + '</button>';
+    });
+
+    content.innerHTML = html;
+    tabs.innerHTML = tabsHtml;
+
+    bindFields();
+    updateSwatches();
+
+    tabs.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        tabs.querySelectorAll('button').forEach(function (b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+        content.querySelectorAll('section.tab').forEach(function (s) { s.classList.remove('active'); });
+        var target = document.getElementById('tab-' + btn.getAttribute('data-tab'));
+        if (target) target.classList.add('active');
+      });
+    });
+
+    var first = content.querySelector('section.tab');
+    if (first) first.classList.add('active');
+  }
+
+  function bindFields() {
+    document.querySelectorAll('[data-path]').forEach(function (el) {
+      var v = getPath(settings, el.getAttribute('data-path'));
+      if (el.type === 'checkbox') {
+        el.checked = !!v;
+      } else if (v === null || v === undefined) {
+        el.value = '';
+      } else {
+        el.value = v;
+      }
+    });
+
+    document.querySelectorAll('[data-path]').forEach(function (el) {
+      if (!/^maps\.\d+\.glass_[hsl]$/.test(el.getAttribute('data-path'))) return;
+      el.addEventListener('input', updateSwatches);
+    });
+  }
+
+  function collect() {
+    document.querySelectorAll('[data-path]').forEach(function (el) {
+      var path = el.getAttribute('data-path');
+      var value;
+      if (el.type === 'checkbox') {
+        value = el.checked;
+      } else if (el.getAttribute('data-kind') === 'number' || el.type === 'number') {
+        value = el.value === '' ? 0 : Number(el.value);
+        if (isNaN(value)) value = 0;
+      } else {
+        value = el.value;
+      }
+      setPath(settings, path, value);
+    });
+    return settings;
+  }
+
+  function hslToRgb(h, s, l) {
+    h = ((Number(h) % 360) + 360) % 360 / 360;
+    s = Math.max(0, Math.min(100, Number(s))) / 100;
+    l = Math.max(0, Math.min(100, Number(l))) / 100;
+    if (s === 0) {
+      var v = Math.round(l * 255);
+      return [v, v, v];
+    }
+    var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    var p = 2 * l - q;
+    function f(t) {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 0.5) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    }
+    return [
+      Math.round(f(h + 1 / 3) * 255),
+      Math.round(f(h) * 255),
+      Math.round(f(h - 1 / 3) * 255)
+    ];
+  }
+
+  function updateSwatches() {
+    if (!settings) return;
+    settings.maps.forEach(function (map, i) {
+      var sw = document.getElementById('swatch-' + i);
+      if (!sw) return;
+      var h = getPath(settings, 'maps.' + i + '.glass_h');
+      var s = getPath(settings, 'maps.' + i + '.glass_s');
+      var l = getPath(settings, 'maps.' + i + '.glass_l');
+      // значения берём прямо из полей, если они уже отрисованы
+      var hEl = document.querySelector('[data-path="maps.' + i + '.glass_h"]');
+      var sEl = document.querySelector('[data-path="maps.' + i + '.glass_s"]');
+      var lEl = document.querySelector('[data-path="maps.' + i + '.glass_l"]');
+      if (hEl) h = hEl.value;
+      if (sEl) s = sEl.value;
+      if (lEl) l = lEl.value;
+      var rgb = hslToRgb(h, s, l);
+      sw.style.background = 'rgb(' + rgb.join(',') + ')';
+      sw.title = 'RGB ' + rgb.join(', ');
+    });
+  }
+
+  /* ------------------------------------------------------ API для Ruby */
+
+  window.FacadeExport = {
+    setSettings: function (json) {
+      try {
+        settings = JSON.parse(json);
+      } catch (e) {
+        settings = null;
+      }
+      if (settings) render();
+    }
+  };
+
+  function inSketchUp() {
+    return !!(window.sketchup && typeof sketchup.ready === 'function');
+  }
+
+  // Вне SketchUp (демо-страница docs/settings_preview.html) показываем
+  // настройки по умолчанию и отключаем сохранение.
+  function demoMode() {
+    var buttons = document.querySelectorAll('footer button');
+    for (var i = 0; i < buttons.length; i++) buttons[i].disabled = true;
+    var note = document.createElement('span');
+    note.className = 'hint';
+    note.style.marginLeft = '12px';
+    note.textContent = 'Демо-режим: окно открыто вне SketchUp, изменения не сохраняются.';
+    document.querySelector('footer').appendChild(note);
+    if (window.FACADE_EXPORT_DEMO) {
+      settings = JSON.parse(JSON.stringify(window.FACADE_EXPORT_DEMO));
+      render();
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    document.getElementById('btn-save').addEventListener('click', function () {
+      if (!settings || !inSketchUp()) return;
+      sketchup.save(JSON.stringify(collect()));
+    });
+    document.getElementById('btn-reset').addEventListener('click', function () {
+      if (inSketchUp()) sketchup.reset();
+    });
+    document.getElementById('btn-cancel').addEventListener('click', function () {
+      if (inSketchUp()) sketchup.cancel();
+      else window.close();
+    });
+
+    if (inSketchUp()) {
+      sketchup.ready();
+    } else {
+      demoMode();
+    }
+  });
+})();
+</script>
+</body>
+</html>
