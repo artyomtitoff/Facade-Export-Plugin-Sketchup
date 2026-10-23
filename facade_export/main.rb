@@ -16,7 +16,7 @@ require_relative 'dialogs'
 
 module FacadeExport
   PLUGIN_NAME = 'Экспорт фасадов'
-  VERSION     = '1.5.0'
+  VERSION     = '1.5.1'
   AUTHOR      = 'Артем Титов motivate_rt'
   PATH = File.expand_path(File.dirname(__FILE__)) unless defined?(PATH) && PATH
 
@@ -53,11 +53,12 @@ module FacadeExport
       end
       view = model.active_view
 
-      # Вид и содержимое проверяем до того, как спрашивать папку.
+      # До окна сохранения проверяем только камеру: это мгновенно.
+      # Габариты модели (обход всей геометрии) считаются уже после выбора
+      # папки, иначе на большой модели SketchUp «думает» минуту, прежде чем
+      # показать окно сохранения.
       begin
         Framing.facade_directions(view.camera, 1)
-        bounds, _scope = Framing.content_bounds(model)
-        Framing.bbox_corners(bounds)
       rescue ExportError => e
         UI.messagebox(e.message)
         return

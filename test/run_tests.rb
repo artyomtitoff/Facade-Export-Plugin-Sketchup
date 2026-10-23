@@ -1394,6 +1394,113 @@ FacadeExport::Exporter.new(
 ).run
 check('Без стекла перекраска не запускается ни разу', $glass_applies.zero?, $glass_applies)
 
+# ------------------------------ 18. карта окон: непрозрачные текстуры белые
+
+section 'Карта окон: непрозрачные текстуры становятся белыми'
+clean_out
+model = new_model
+brick = model.materials['Кирпич']
+tex = Sketchup::Texture.new
+tex.filename = '/textures/brick.jpg'
+tex.width = 2.0
+tex.height = 2.0
+brick.texture = tex
+view = model.active_view
+fresh_settings
+result = FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Стекло', :facade_count => 1
+).run
+check('Экспорт со стеклом проходит', result.errors.empty?, result.errors.inspect)
+
+windows_w = write_for(view.writes, 1, 'Окна')
+brick_win = windows_w[:materials].find { |m| m[0] == 'Кирпич' }
+check('Карта окон: непрозрачная текстура убрана', brick_win[3].nil?, brick_win.inspect)
+check('Карта окон: непрозрачный материал белый',
+      brick_win[1][0, 3] == [255, 255, 255], brick_win[1].inspect)
+check('Карта окон: стекло всё ещё окрашено',
+      windows_w[:materials].find { |m| m[0] == 'Стекло' }[1][0, 3] == [0, 255, 21],
+      windows_w[:materials].find { |m| m[0] == 'Стекло' }.inspect)
+
+texture_w = write_for(view.writes, 1, 'Текстура')
+brick_tex = texture_w[:materials].find { |m| m[0] == 'Кирпич' }
+check('Карта текстур: текстура на месте', brick_tex[3] == '/textures/brick.jpg', brick_tex.inspect)
+check('Карта текстур: цвет не тронут', brick_tex[1][0, 3] == [180, 90, 70], brick_tex[1].inspect)
+
+lines_w = write_for(view.writes, 1, 'Линии')
+check('Карта линий: текстура на месте',
+      lines_w[:materials].find { |m| m[0] == 'Кирпич' }[3] == '/textures/brick.jpg')
+
+after = model.materials['Кирпич']
+check('После экспорта текстура возвращена',
+      after.texture && after.texture.filename == '/textures/brick.jpg',
+      after.texture && after.texture.filename)
+check('После экспорта цвет возвращён',
+      after.color.to_a[0, 3] == [180, 90, 70], after.color.to_a.inspect)
+
+# своя карта со стеклом: отбеливания нет, текстуры остаются
+clean_out
+model = new_model
+view = model.active_view
+fresh_settings
+brick = model.materials['Кирпич']
+tex = Sketchup::Texture.new
+tex.filename = '/textures/brick.jpg'
+brick.texture = tex
+custom = FacadeExport::Config.new_custom_map(3)
+custom['title'] = 'Своя стеклянная'
+custom['glass_highlight'] = true
+FacadeExport.settings.maps << custom
+FacadeExport.settings.normalize!
+FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Своя', :facade_count => 1
+).run
+custom_w = write_for(view.writes, 1, 'Своя стеклянная')
+check('Своя карта: непрозрачная текстура не отбеливается',
+      custom_w[:materials].find { |m| m[0] == 'Кирпич' }[3] == '/textures/brick.jpg',
+      custom_w[:materials].find { |m| m[0] == 'Кирпич' }.inspect)
+
+# ------------------------------ 19. скорость: анализ модели — после диалога
+
+section 'Скорость: окно сохранения открывается без анализа модели'
+module BoundsSpy
+  def content_bounds(model)
+    $bounds_calls = ($bounds_calls || 0) + 1
+    super
+  end
+end
+FacadeExport::Framing.singleton_class.prepend(BoundsSpy)
+
+module AskSpy
+  def ask_destination(settings, base)
+    $bounds_before_dialog = ($bounds_calls || 0)
+    super
+  end
+end
+FacadeExport::Dialogs.singleton_class.prepend(AskSpy)
+
+clean_out
+UI.messages = []
+$bounds_calls = 0
+$bounds_before_dialog = nil
+model = new_model
+fresh_settings
+UI.savepanel_result = File.join(OUT_ROOT, 'Быстро.png')
+FacadeExport.export_all_facades
+check('До окна сохранения модель не обходится',
+      $bounds_before_dialog == 0, $bounds_before_dialog)
+check('За весь экспорт габариты считаются один раз',
+      $bounds_calls == 1, $bounds_calls)
+
+clean_out
+$bounds_calls = 0
+UI.savepanel_result = nil
+model = new_model
+FacadeExport.export_all_facades
+check('Отмена окна сохранения вообще не обходит модель', $bounds_calls.zero?, $bounds_calls)
+UI.savepanel_result = nil
+
 # ------------------------------------------------------------------ итог
 
 puts

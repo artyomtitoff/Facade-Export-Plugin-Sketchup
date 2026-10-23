@@ -210,6 +210,11 @@ module Sketchup
       @start = start_point
       @end = end_point
     end
+
+    # Как в SketchUp: габариты ребра — его концы.
+    def bounds
+      Geom::BoundingBox.new([@start, @end])
+    end
   end
 
   # Контур грани: список вершин.
@@ -242,6 +247,11 @@ module Sketchup
 
     def vertices
       @loops.first.vertices
+    end
+
+    # Как в SketchUp: габариты грани — по её вершинам.
+    def bounds
+      Geom::BoundingBox.new(@loops.flat_map { |l| l.vertices.map(&:position) })
     end
   end
 
@@ -652,7 +662,9 @@ module Sketchup
         :rendering => @model.rendering_options.to_h,
         :shadow => @model.shadow_info.to_h,
         :camera => @camera,
-        :materials => @model.materials.map { |m| [m.name, m.color.to_a, m.alpha] },
+        :materials => @model.materials.map do |m|
+          [m.name, m.color.to_a, m.alpha, m.texture && m.texture.filename]
+        end,
         :selection => @model.selection.length,
         :hidden => @model.entities.map { |e| e.hidden? }
       }

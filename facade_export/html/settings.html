@@ -88,29 +88,33 @@
     color: var(--muted);
     font-weight: 600;
   }
-  /* Два столбца: широкий зазор плюс разделительная линия посередине —
-     рамка поля из левого столбца (в том числе выпадающего списка) больше
-     не соприкасается с правым столбцом. */
+  /* Два столбца с настоящим зазором между рамками.
+     Ширина колонки и отступ заданы явно (flex + calc), а не через gap:
+     так расстояние между полями гарантировано в любом движке и при любом
+     размере окна. */
   .grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    column-gap: 56px;
-    row-gap: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    margin-bottom: -14px;
   }
-  .grid.split { position: relative; }
-  .grid.split::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: calc(50% - 0.5px);
-    width: 1px;
-    background: var(--line);
-    pointer-events: none;
+  .grid > * {
+    flex: 0 0 calc(50% - 34px);
+    max-width: calc(50% - 34px);
+    min-width: 0;
+    margin: 0 0 14px 0;
   }
-  .grid.one { grid-template-columns: minmax(0, 1fr); }
-  .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 26px; }
-  .grid.three.split::before { display: none; }
+  .grid > *:nth-child(odd) { margin-right: 64px; }
+  .grid.one > * {
+    flex: 1 1 100%;
+    max-width: 100%;
+    margin-right: 0;
+  }
+  .grid.three > * {
+    flex: 0 0 calc(33.3333% - 20px);
+    max-width: calc(33.3333% - 20px);
+    margin-right: 27px;
+  }
+  .grid.three > *:nth-child(3n) { margin-right: 0; }
   .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .field label { font-size: 12px; color: #3b4149; }
   .field input[type="number"], .field input[type="text"], .field select {
@@ -320,7 +324,7 @@
     var html = '';
     html += '<section class="tab" id="tab-export">';
 
-    html += '<div class="card"><h2>Кадр (PNG)</h2><div class="grid split">';
+    html += '<div class="card"><h2>Кадр (PNG)</h2><div class="grid">';
     html += numberField('export.width', 'Длина большей стороны, пикс.', 100, 9999, 1,
       'По умолчанию 9999 пикс. — это большая сторона кадра; максимум 9999.');
     html += numberField('export.height', 'Высота, пикс.', 0, 9999, 1,
@@ -349,7 +353,7 @@
     html += '</div></div>';
 
     var adv = '';
-    adv += '<div class="card"><h2>Пропорции и проекция</h2><div class="grid split">';
+    adv += '<div class="card"><h2>Пропорции и проекция</h2><div class="grid">';
     adv += selectField('export.aspect', 'Соотношение сторон кадра', ASPECTS,
       'Для высоких объектов кадр автоматически разворачивается: 9999 уходит по вертикали.');
     adv += '<div></div>';
@@ -364,7 +368,7 @@
       'Соответствует галочке в лотке «Тени». Для карт-фасадов обычно выключено.');
     adv += '</div></div>';
 
-    adv += '<div class="card"><h2>Стиль и фон</h2><div class="grid split">';
+    adv += '<div class="card"><h2>Стиль и фон</h2><div class="grid">';
     adv += textField('export.background', 'Цвет фона (#RRGGBB)', 'По умолчанию белый: #FFFFFF.');
     adv += '<div></div>';
     adv += '</div><div class="grid one" style="margin-top:12px">';
@@ -418,7 +422,7 @@
 
     // --- Основное: всё, что нужно каждый день
     html += '<div class="card"><h2>Карта «' + esc(map.title) + '»</h2>';
-    html += '<div class="grid split">';
+    html += '<div class="grid">';
     html += textField(p + 'title', 'Название карты (в имени файла)');
     html += selectField(p + 'render_mode', 'Режим отображения', RENDER_MODES);
     html += '</div>';
@@ -433,7 +437,7 @@
     // --- Настройки теней: только когда включён флажок «Тени»
     html += '<div class="dep" data-dep="shadows">';
     html += '<div class="dep-title">Настройки теней <small>(солнце 45° слева сверху)</small></div>';
-    html += '<div class="grid split">';
+    html += '<div class="grid">';
     html += numberField(p + 'shadow_azimuth', 'Смещение солнца влево, °', 0, 90, 1,
       '45° — солнце слева сверху, тени падают вправо вниз.');
     html += numberField(p + 'shadow_elevation', 'Высота солнца, °', 5, 89, 1,

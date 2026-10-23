@@ -108,9 +108,17 @@ module FacadeExport
       @on_progress  = options[:on_progress]
       @result = Result.new([], [], [], 0.0, Time.now, [], 0, @directory, 0, 0, :model)
       @transparent_materials = nil
+      @bounds = nil
+      @scope = nil
+      @glass_entries = nil
+      @glass_only_entries = nil
     end
 
     def run
+      @bounds = nil
+      @scope = nil
+      @glass_entries = nil
+      @glass_only_entries = nil
       validate!
       started = Time.now
       state = SceneState.new(@model, @view)
@@ -252,14 +260,9 @@ module FacadeExport
       end
 
       directions = Framing.facade_directions(@view.camera, analysis_count)
-      # Габариты уже посчитаны в validate! — не обходим модель второй раз.
-      bounds = @bounds
-      scope = @scope
-      if bounds.nil?
-        bounds, scope = Framing.content_bounds(@model)
-        @bounds = bounds
-        @scope = scope
-      end
+      # Габариты считаются один раз за экспорт: обход геометрии — самая
+      # дорогая часть, повторять её на каждый фасад нельзя.
+      bounds, scope = export_bounds
       plan = Framing.plan(bounds, directions, @settings.export)
       cameras = directions.each_with_index.map do |direction, index|
         Framing.build_camera(
@@ -268,6 +271,15 @@ module FacadeExport
         )
       end
       [directions.first(@facade_count), cameras.first(@facade_count), plan, scope]
+    end
+
+    # Габариты того, что экспортируем (кэшируются на весь экспорт).
+    def export_bounds
+      return [@bounds, @scope] unless @bounds.nil?
+      set_status_text('Экспорт фасадов: анализ модели…')
+      Framing.reset_cache!
+      @bounds, @scope = Framing.content_bounds(@model)
+      [@bounds, @scope]
     end
 
     def validate!
@@ -282,10 +294,9 @@ module FacadeExport
       rescue StandardError => e
         raise ExportError, "Не удалось создать папку для сохранения: #{e.message}"
       end
+      # Только дешёвые проверки: обход геометрии выполняется в export_bounds,
+      # уже после окна сохранения (см. build_cameras).
       Framing.facade_directions(@view.camera, 1)
-      Framing.reset_cache!
-      @bounds, @scope = Framing.content_bounds(@model)
-      Framing.bbox_corners(@bounds)
       true
     end
 
@@ -429,7 +440,8 @@ module FacadeExport
     end
 
     def apply_glass(map, job)
-      return nil unless glass_needed?(job)
+      whiten = windows_map?(map) && opaque_textures?
+      return nil unless whiten || glass_needed?(job)
       colors = {
         'main'    => Util.hsl_to_rgb(map['main_h'], map['main_s'], map['main_l']),
         'tinted'  => Util.hsl_to_rgb(map['tinted_h'], map['tinted_s'], map['tinted_l']),
@@ -441,29 +453,47 @@ module FacadeExport
         :railing_max => Config::GLASS_RAILING_MAX,
         :tinted_min => Config::GLASS_TINTED_MIN,
         :opaque_min => Config::GLASS_OPAQUE_MIN,
-        :entries => glass_entries
+        :entries => glass_entries,
+        :whiten_opaque => whiten
       )
       recolored.apply
       recolored
     end
 
-    # Список стеклянных материалов считается один раз на весь экспорт.
+    # Карта окон: на ней остаются только окна, все непрозрачные текстуры
+    # становятся белыми.
+    def windows_map?(map)
+      map['kind'].to_s == 'windows'
+    end
+
+    # Список материалов считается один раз на весь экспорт.
     def glass_entries
       @glass_entries ||= GlassRecolor.scan(
         @model,
         :railing_max => Config::GLASS_RAILING_MAX,
         :tinted_min => Config::GLASS_TINTED_MIN,
-        :opaque_min => Config::GLASS_OPAQUE_MIN
+        :opaque_min => Config::GLASS_OPAQUE_MIN,
+        :include_opaque => true
       )
+    end
+
+    # Есть ли на карте окон что отбеливать (непрозрачные материалы с текстурой).
+    def opaque_textures?
+      glass_entries.any? { |entry| entry.type.to_s == 'opaque' }
+    end
+
+    # Только стеклянные материалы (без непрозрачных заготовок для отбеливания).
+    def glass_only_entries
+      @glass_only_entries ||= glass_entries.select { |e| Config::GLASS_TITLES.key?(e.type.to_s) }
     end
 
     # Нужно ли вообще что-то делать с материалами для этой карты.
     # Если стекла в модели нет, карта окон не тратит время на поиск окон.
     def glass_needed?(job)
-      return false if glass_entries.empty?
+      return false if glass_only_entries.empty?
       mode = job.glass_mode.to_s
       return true if mode == 'combined' || mode == 'hide_railings'
-      glass_entries.any? { |entry| entry.type.to_s == mode }
+      glass_only_entries.any? { |entry| entry.type.to_s == mode }
     end
 
     # Экспорт PNG: ширина/высота кадра считаются по содержимому,
