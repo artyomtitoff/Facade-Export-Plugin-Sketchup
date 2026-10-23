@@ -193,6 +193,17 @@ check('Неизвестный режим -> shaded', settings.map('texture')['re
 
 settings.replace!('export' => { 'aspect' => 'нет такого', 'projection' => 'странная' })
 check('Неизвестное соотношение -> 4:3', settings.exp('aspect') == '4:3')
+check('Есть широкие соотношения 2:1 и 3:1',
+      FacadeExport::Config::ASPECTS.key?('2:1') && FacadeExport::Config::ASPECTS.key?('3:1'),
+      FacadeExport::Config::ASPECTS.keys.inspect)
+check('Вертикальных дублей нет (3:4, 2:3, 9:16)',
+      !FacadeExport::Config::ASPECTS.key?('3:4') &&
+      !FacadeExport::Config::ASPECTS.key?('2:3') &&
+      !FacadeExport::Config::ASPECTS.key?('9:16'),
+      FacadeExport::Config::ASPECTS.keys.inspect)
+check('Все соотношения записаны широкой стороной',
+      FacadeExport::Config::ASPECTS.values.all? { |w, h| w >= h },
+      FacadeExport::Config::ASPECTS.values.inspect)
 check('Неизвестная проекция -> параллельная', settings.exp('projection') == 'parallel')
 
 settings.replace!('maps' => [])
@@ -297,6 +308,18 @@ check('Явная высота используется как есть',
       FacadeExport::Framing.image_size(settings_h.export, projections)[0, 2] == [9999, 5000],
       FacadeExport::Framing.image_size(settings_h.export, projections).inspect)
 
+settings_31 = FacadeExport::Settings.new
+settings_31.set_export('aspect', '3:1')
+plan_31 = FacadeExport::Framing.plan(model.bounds, dirs, settings_31.export)
+check('Соотношение 3:1 -> 9999×3333',
+      plan_31[:image_width] == 9999 && plan_31[:image_height] == 3333,
+      [plan_31[:image_width], plan_31[:image_height]].inspect)
+settings_31.set_export('aspect', '2:1')
+plan_21 = FacadeExport::Framing.plan(box_points(400, 400, 2000), dirs, settings_31.export)
+check('2:1 для башни разворачивается: 5000×9999',
+      plan_21[:image_width] == 5000 && plan_21[:image_height] == 9999,
+      [plan_21[:image_width], plan_21[:image_height]].inspect)
+
 bounds_all, scope_all = FacadeExport::Framing.content_bounds(model)
 check('Без открытой группы кадрируется вся модель', scope_all == :model &&
       (bounds_all.max.x - 1200).abs < 1e-6)
@@ -390,9 +413,15 @@ check('Материал с текстурой: текстура возвраще
 hidden = FacadeExport::GlassRecolor.new(model, colors, :mode => 'hide_railings')
 hidden.apply
 check('Карты текстур/линий/теней: ограждения исчезают (0 %)', model.materials['Витрина'].alpha == 0.0)
-check('Карты текстур/линий/теней: основное стекло не тронуто',
-      (model.materials['Стекло'].alpha - 0.35).abs < 1e-9 &&
-      model.materials['Стекло'].color.to_a[0, 3] == [200, 230, 240])
+check('Карты текстур/линий/теней: основное стекло становится непрозрачным',
+      model.materials['Стекло'].alpha == 1.0, model.materials['Стекло'].alpha)
+check('Карты текстур/линий/теней: цвет основного стекла сохранён',
+      model.materials['Стекло'].color.to_a[0, 3] == [200, 230, 240],
+      model.materials['Стекло'].color.to_a.inspect)
+check('Карты текстур/линий/теней: тонировка тоже непрозрачна',
+      model.materials['Тонировка'].alpha == 1.0)
+check('Карты текстур/линий/теней: текстура ограждения не потеряна',
+      !model.materials['Витрина'].texture.nil?)
 hidden.restore
 check('После карты с ограждениями всё восстановлено',
       (model.materials['Витрина'].alpha - 0.0).abs < 1e-9 &&
@@ -415,6 +444,114 @@ split_main.restore
 after_split = model.materials.map { |m| [m.name, m.color.to_a, m.alpha] }
 check('Раздельные карты стекла не портят материалы',
       after_split == before.map { |b| [b[0], b[1], b[2]] }, "#{after_split.inspect}\n       #{before.map { |b| [b[0], b[1], b[2]] }.inspect}")
+
+# -------------------------------------- 4б. режим «только видимый участок»
+
+section 'Экспорт только видимого участка'
+clean_out
+model = new_model
+view = model.active_view
+view.vpwidth = 1920.0
+view.vpheight = 1080.0
+fresh_settings
+FacadeExport.settings.set_export('visible_area', true)
+check('Режим по умолчанию выключен', FacadeExport::Settings.new.exp('visible_area') == false)
+check('Режим включается', FacadeExport.settings.exp('visible_area') == true)
+
+user_camera = view.camera
+plan_vis, cams_vis = FacadeExport::Framing.visible_cameras(
+  user_camera, view, FacadeExport.settings.export, 4, true
+)
+check('Кадр по соотношению окна просмотра: 9999×5624',
+      plan_vis[:image_width] == 9999 && plan_vis[:image_height] == 5624,
+      [plan_vis[:image_width], plan_vis[:image_height]].inspect)
+# Пользователь смотрел в перспективе — переводим в параллельную проекцию
+# с эквивалентной высотой кадра на расстоянии до цели.
+expected_height = 2.0 * (user_camera.eye - user_camera.target).length *
+                  Math.tan(user_camera.fov / 2.0 * Math::PI / 180.0)
+check_close('Перспектива -> эквивалентная высота ортокадра',
+            cams_vis[0].height, expected_height, 1e-6)
+check('Первая камера совпадает с видом пользователя',
+      cams_vis[0].eye.to_a == user_camera.eye.to_a &&
+      cams_vis[0].target.to_a == user_camera.target.to_a,
+      [cams_vis[0].eye.to_a, user_camera.eye.to_a].inspect)
+check('Камеры параллельные (как в настройках)', cams_vis.all? { |c| c.perspective? == false })
+check('Все камеры на одном расстоянии',
+      cams_vis.map { |c| (c.eye - c.target).length.round(6) }.uniq.length == 1,
+      cams_vis.map { |c| (c.eye - c.target).length }.inspect)
+check('Четыре разных ракурса', cams_vis.map { |c| c.eye.to_a }.uniq.length == 4)
+check('Цель у всех камер одна', cams_vis.map { |c| c.target.to_a }.uniq.length == 1)
+expected_dirs = [[0, 1], [1, 0], [0, -1], [-1, 0]]
+cams_vis.each_with_index do |c, i|
+  check_close("Видимый режим, камера #{i + 1}: поворот на 90°",
+              FacadeExport::Util.angle_between_deg(c.direction, Geom::Vector3d.new(*expected_dirs[i])), 0.0, 1e-6)
+end
+check('Масштаб (пикселей на единицу) посчитан', plan_vis[:scale].to_f > 0.0, plan_vis[:scale])
+
+parallel_cam = Sketchup::Camera.new(Geom::Point3d.new(0, -5000, 300),
+                                   Geom::Point3d.new(0, 0, 300), Geom::Vector3d.new(0, 0, 1))
+parallel_cam.perspective = false
+parallel_cam.height = 2500.0
+plan_par, cams_par = FacadeExport::Framing.visible_cameras(
+  parallel_cam, view, FacadeExport.settings.export, 1, true
+)
+check_close('Параллельная камера пользователя: высота кадра без изменений',
+            cams_par[0].height, 2500.0, 1e-6)
+
+# Вертикальное окно просмотра
+view.vpwidth = 1080.0
+view.vpheight = 1920.0
+plan_portrait, = FacadeExport::Framing.visible_cameras(
+  view.camera, view, FacadeExport.settings.export, 1, true
+)
+check('Вертикальное окно: 5624×9999',
+      plan_portrait[:image_width] == 5624 && plan_portrait[:image_height] == 9999,
+      [plan_portrait[:image_width], plan_portrait[:image_height]].inspect)
+view.vpwidth = 1920.0
+view.vpheight = 1080.0
+
+# Полный экспорт в этом режиме
+clean_out
+model = new_model
+view = model.active_view
+view.vpwidth = 1920.0
+view.vpheight = 1080.0
+fresh_settings
+FacadeExport.settings.set_export('visible_area', true)
+before_eye = view.camera.eye.to_a
+result = FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Экран', :facade_count => 4
+).run
+check('Видимый режим: 16 файлов', result.files.length == 16, result.files.length)
+check('Видимый режим: ошибок нет', result.errors.empty?, result.errors.inspect)
+check('Видимый режим: пометка в результате', result.scope == :visible, result.scope)
+check('Видимый режим: размеры как у окна (9999×5624)',
+      view.writes.all? { |w| w[:width] == 9999 && w[:height] == 5624 },
+      view.writes.map { |w| [w[:width], w[:height]] }.uniq.inspect)
+check('Видимый режим: камера пользователя не сдвинута',
+      view.writes.first[:camera].eye.to_a == before_eye,
+      [view.writes.first[:camera].eye.to_a, before_eye].inspect)
+check('Видимый режим: камера восстановлена', view.camera.eye.to_a == before_eye)
+check('Видимый режим: стиль всё равно настроен',
+      view.writes.all? { |w| w[:rendering]['DrawSky'] == false })
+
+# Явная высота перекрывает соотношение окна
+clean_out
+model = new_model
+view = model.active_view
+view.vpwidth = 1920.0
+view.vpheight = 1080.0
+fresh_settings
+FacadeExport.settings.set_export('visible_area', true)
+FacadeExport.settings.set_export('height', 4000)
+FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Своя', :facade_count => 1
+).run
+check('Видимый режим: явная высота уважается',
+      view.writes.all? { |w| w[:width] == 9999 && w[:height] == 4000 },
+      view.writes.map { |w| [w[:width], w[:height]] }.uniq.inspect)
 
 # ---------------------------------------------------- 5. полный экспорт (16)
 
@@ -517,7 +654,12 @@ check('Окна: тонировка H180/S100/L50',
 
 [['Текстура', texture_w], ['Линии', lines_w], ['Тени', shadows_w]].each do |title, w|
   rail = w[:materials].find { |m| m[0] == 'Витрина' }
+  main_glass = w[:materials].find { |m| m[0] == 'Стекло' }
+  tint = w[:materials].find { |m| m[0] == 'Тонировка' }
   check("#{title}: стеклянные ограждения исчезают", rail && rail[2] == 0.0, rail.inspect)
+  check("#{title}: основное стекло непрозрачно (не просвечивает)",
+        main_glass && main_glass[2] == 1.0, main_glass.inspect)
+  check("#{title}: тонировка непрозрачна", tint && tint[2] == 1.0, tint.inspect)
 end
 
 check('Стиль восстановлен полностью', model.rendering_options.to_h == initial_rendering,

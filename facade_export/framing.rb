@@ -12,6 +12,10 @@
 #   * масштаб общий для всех четырёх фасадов и не зависит от размера
 #     окна просмотра SketchUp;
 #   * фасад прижат к низу кадра на расстоянии зазора, по центру по горизонтали.
+#
+# Отдельный режим «Экспортировать только видимый участок»
+# (export.visible_area = true) ничего не масштабирует: в PNG попадает то,
+# что пользователь видит в окне SketchUp (см. visible_cameras).
 
 module FacadeExport
   # Класс ошибок плагина (понятные сообщения пользователю).
@@ -350,6 +354,126 @@ module FacadeExport
       us = corners.map { |c| c.x * direction.x + c.y * direction.y + c.z * direction.z }
       data[:depth] = (us.max - us.min).abs
       data
+    end
+
+    # ------------------------------------------------- режим «что на экране»
+    #
+    # «Экспортировать только видимый участок»: кадр не подгоняется под
+    # габариты объекта. Берётся текущий вид пользователя — тот же ракурс,
+    # тот же зум, та же композиция. Ограничения остаются прежними:
+    #   * параллельная проекция (если включена в настройках);
+    #   * соотношение сторон — как у окна просмотра;
+    #   * размеры — из настроек (большая сторона 9999 px и т.д.);
+    #   * остальные фасады — та же камера, повёрнутая на 90° вокруг цели.
+
+    # Отношение сторон окна просмотра (ширина / высота).
+    def viewport_ratio(view)
+      w = begin
+        view.vpwidth.to_f
+      rescue StandardError
+        0.0
+      end
+      h = begin
+        view.vpheight.to_f
+      rescue StandardError
+        0.0
+      end
+      return nil if w <= 0.0 || h <= 0.0
+      w / h
+    end
+
+    # Высота кадра в единицах модели для текущей камеры.
+    def visible_frame_height(camera)
+      perspective = begin
+        camera.perspective?
+      rescue StandardError
+        true
+      end
+      unless perspective
+        h = begin
+          camera.height.to_f
+        rescue StandardError
+          0.0
+        end
+        return h if h > 0.0
+      end
+      distance = begin
+        (camera.eye - camera.target).length
+      rescue StandardError
+        0.0
+      end
+      fov = begin
+        camera.fov.to_f
+      rescue StandardError
+        FOV
+      end
+      fov = FOV if fov <= 0.0 || fov >= 170.0
+      height = 2.0 * distance * Math.tan(fov / 2.0 * Math::PI / 180.0)
+      height > 0.0 ? height : 1000.0
+    end
+
+    # Размер картинки в режиме «что на экране»: длинная сторона из настроек,
+    # вторая — по соотношению окна просмотра.
+    def visible_image_size(export_settings, ratio)
+      longest = export_settings['width'].to_i
+      longest = Config::MIN_IMAGE_SIDE if longest < Config::MIN_IMAGE_SIDE
+      height = export_settings['height'].to_i
+      return [longest, height] if height > 0
+      ratio = 1.0 if ratio.nil? || ratio <= 0.0
+      side = [(longest * [ratio, 1.0 / ratio].min).round, Config::MIN_IMAGE_SIDE].max
+      # Длинная сторона всегда равна «ширине» из настроек: для вертикального
+      # окна просмотра она уходит в высоту кадра.
+      ratio >= 1.0 ? [longest, side] : [side, longest]
+    end
+
+    # Камеры для всех фасадов в режиме «что на экране».
+    # Первая — ровно текущий вид, каждая следующая повёрнута на 90°.
+    def visible_cameras(camera, view, export_settings, count = 4, parallel = true)
+      ratio = viewport_ratio(view)
+      width, height = visible_image_size(export_settings, ratio)
+      frame_height = visible_frame_height(camera)
+
+      target = Geom::Point3d.new(camera.target.x, camera.target.y, camera.target.z)
+      eye = camera.eye
+      dx = eye.x - target.x
+      dy = eye.y - target.y
+      dz = eye.z - target.z
+
+      cameras = []
+      count.times do
+        cam = Sketchup::Camera.new(
+          Geom::Point3d.new(target.x + dx, target.y + dy, target.z + dz),
+          Geom::Point3d.new(target.x, target.y, target.z),
+          Z_AXIS
+        )
+        begin
+          cam.perspective = parallel ? false : true
+        rescue StandardError
+          nil
+        end
+        begin
+          if parallel
+            cam.height = frame_height
+          else
+            cam.fov = camera.fov
+          end
+        rescue StandardError
+          nil
+        end
+        cameras << cam
+        # поворот вектора «цель -> камера» на 90° вокруг вертикальной оси
+        dx, dy = dy, -dx
+      end
+
+      [{
+        :image_width => width,
+        :image_height => height,
+        :frame_height => frame_height,
+        :ratio => ratio,
+        :visible => true,
+        :gap => 0,
+        :scale => height.to_f / [frame_height, MIN_SIZE].max
+      }, cameras]
     end
 
     def plan(bounds, directions, export_settings)

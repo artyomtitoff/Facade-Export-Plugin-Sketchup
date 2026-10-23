@@ -33,7 +33,8 @@ const defaults = {
     width: 9999, height: 0, line_scale: 0.3, margin: 0.02,
     restore_view: true, show_report: true,
     aspect: "4:3", projection: "parallel", sun_for_shading: false,
-    use_view_size: false, antialias: false, transparent: true, background: "#FFFFFF",
+    use_view_size: false, visible_area: false, antialias: false, transparent: true,
+    background: "#FFFFFF",
     show_sky: false, show_ground: false, hide_guides: true, hide_annotations: true,
     hide_watermarks: true, show_section_planes: false, last_directory: "",
   },
@@ -104,7 +105,7 @@ const exportTab = q("#tab-export");
 const visibleExport = [...exportTab.querySelectorAll("input, select")]
   .filter((el) => !el.closest("details.adv"));
 const visiblePaths = visibleExport.map((el) => el.getAttribute("data-path"));
-check("Экспорт: видимых полей 6", visibleExport.length === 6, visiblePaths.join(", "));
+check("Экспорт: видимых полей 7", visibleExport.length === 7, visiblePaths.join(", "));
 check("Экспорт: видны ширина/высота/линии/отступ",
   ["export.width", "export.height", "export.line_scale", "export.margin"].every((p) => visiblePaths.includes(p)),
   visiblePaths.join(", "));
@@ -124,6 +125,28 @@ check("Параметры кадра спрятаны в «Расширенны�
   !!exportTab.querySelector("details.adv") && byPath("export.aspect")?.closest("details.adv") !== null);
 check("Соотношение сторон по умолчанию 4:3", byPath("export.aspect")?.value === "4:3");
 check("Нет формулировки «по заданию»", !doc.body.textContent.includes("по заданию"));
+
+// --- п. 3: соотношения — только широкие + 2:1 и 3:1
+const aspectSelect = byPath("export.aspect");
+const aspectValues = [...aspectSelect.querySelectorAll("option")].map((o) => o.value);
+check("Соотношения: есть 3:1 и 2:1",
+  aspectValues.includes("3:1") && aspectValues.includes("2:1"), aspectValues.join(", "));
+check("Соотношения: вертикальных дублей нет",
+  !aspectValues.includes("3:4") && !aspectValues.includes("2:3") && !aspectValues.includes("9:16"),
+  aspectValues.join(", "));
+check("Соотношения: все широкие или 1:1",
+  aspectValues.every((v) => {
+    const [w, h] = v.split(":").map(Number);
+    return w >= h;
+  }), aspectValues.join(", "));
+
+// --- п. 4: «только видимый участок»
+check("Есть флажок «Экспортировать только видимый участок»", !!byPath("export.visible_area"));
+check("Флажок по умолчанию выключен", byPath("export.visible_area")?.checked === false);
+const vaHint = byPath("export.visible_area").closest(".check").textContent;
+check("Подсказка объясняет, что попадёт в PNG",
+  vaHint.includes("ровно то, что видно") && vaHint.includes("повёрнутой на 90°"),
+  vaHint.slice(0, 160));
 
 /* ------------------------------------------------ вкладка карты */
 
@@ -212,6 +235,15 @@ let saved = null;
 try { saved = JSON.parse(calls.save); } catch (e) { saved = null; }
 check("JSON сохраняется корректно", saved !== null);
 check("Изменённая ширина попала в JSON", saved?.export?.width === 12000, saved?.export?.width);
+byPath("export.visible_area").checked = true;
+fire(doc.getElementById("btn-save"), "click");
+saved = JSON.parse(calls.save);
+check("Флажок «видимый участок» сохраняется", saved?.export?.visible_area === true,
+  saved?.export?.visible_area);
+byPath("export.visible_area").checked = false;
+fire(doc.getElementById("btn-save"), "click");
+saved = JSON.parse(calls.save);
+check("Флажок можно снять", saved?.export?.visible_area === false);
 check("Снятая галочка проекции -> perspective", saved?.export?.projection === "perspective",
   saved?.export?.projection);
 check("Все поля карт сохранены", saved?.maps?.length === 4, saved?.maps?.length);

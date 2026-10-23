@@ -7,6 +7,10 @@
 #   11–89 %  — основное стекло;
 #   90–99 %  — тонированное стекло;
 #   100 %    — обычный материал, не трогаем.
+#
+# На картах текстур, линий и теней основное и тонированное стекло становится
+# непрозрачным (цвет и текстура сохраняются): иначе фасад просвечивает, за ним
+# видно лишние объекты и на стекло не падают тени. Исчезают только ограждения.
 
 module FacadeExport
   class GlassRecolor
@@ -98,9 +102,12 @@ module FacadeExport
 
     private
 
-    # :color — перекрасить и сделать непрозрачным,
-    # :hide  — сделать полностью прозрачным,
-    # nil    — не трогать.
+    # :color  — перекрасить и сделать непрозрачным (карта окон),
+    # :opaque — оставить исходный цвет и текстуру, но сделать непрозрачным
+    #           (карты текстур/линий/теней: стекло там не должно просвечивать
+    #           и пропускать свет — иначе видны предметы за фасадом и нет тени),
+    # :hide   — сделать полностью прозрачным (ограждения на «не оконных» картах),
+    # nil     — не трогать.
     def action_for(type)
       case @mode
       when 'combined'
@@ -108,7 +115,7 @@ module FacadeExport
       when 'main', 'tinted', 'railing'
         type == @mode ? :color : :hide
       when 'hide_railings'
-        type == 'railing' ? :hide : nil
+        type == 'railing' ? :hide : :opaque
       end
     end
 
@@ -119,6 +126,9 @@ module FacadeExport
         color = @colors[type] || @colors['main'] || [0, 255, 21]
         mat.texture = nil if state[:texture]
         mat.color = Sketchup::Color.new(color[0], color[1], color[2])
+        mat.alpha = 1.0
+        @recolored += 1
+      when :opaque
         mat.alpha = 1.0
         @recolored += 1
       when :hide
