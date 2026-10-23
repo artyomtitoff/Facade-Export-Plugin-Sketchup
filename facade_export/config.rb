@@ -9,7 +9,7 @@ module FacadeExport
   module Config
     PREF_SECTION = 'FacadeExport'.freeze
     PREF_KEY     = 'settings'.freeze
-    SETTINGS_VERSION = 2
+    SETTINGS_VERSION = 3
 
     # Значения "RenderMode" (SketchUp, "Правка > Грань"):
     # 0 — Каркас, 1 — Скрытые линии, 2 — Затенение, 5 — Монохромный.
@@ -68,6 +68,12 @@ module FacadeExport
     GLASS_TINTED_MIN  = 90    # 90–99 %  — тонированное стекло
     GLASS_OPAQUE_MIN  = 99.5  # ≥ 99.5 % — не стекло, обычные материалы
 
+    # Текстуры есть только в режиме «Затенение»: в остальных режимах
+    # SketchUp их не рисует, поэтому отдельной галочки в настройках нет.
+    def self.textures_for(render_mode)
+      render_mode.to_s == 'shaded'
+    end
+
     def self.aspect_ratio(name)
       ASPECTS[name.to_s] || ASPECTS[DEFAULT_ASPECT]
     end
@@ -122,7 +128,6 @@ module FacadeExport
           'render_mode'=> 'shaded',   # Затенение с текстурами
           'edges'      => false,      # только текстуры, без линий
           'shadows'    => false,
-          'textures'   => true,
           'material_transparency' => false,
           'shadow_azimuth'   => 45,
           'shadow_elevation' => 45,
@@ -137,7 +142,6 @@ module FacadeExport
           'render_mode'=> 'hidden',   # Скрытые линии
           'edges'      => true,       # только линии
           'shadows'    => false,
-          'textures'   => false,
           'material_transparency' => false,
           'shadow_azimuth'   => 45,
           'shadow_elevation' => 45,
@@ -152,7 +156,6 @@ module FacadeExport
           'render_mode'=> 'hidden',   # белые грани — остаются только тени
           'edges'      => false,
           'shadows'    => true,
-          'textures'   => false,
           'material_transparency' => false,
           'shadow_azimuth'   => 45,   # солнце слева сверху под 45°
           'shadow_elevation' => 45,
@@ -167,8 +170,8 @@ module FacadeExport
           'render_mode'=> 'shaded',   # "Отобразить в режиме теней" — без теней
           'edges'      => false,
           'shadows'    => false,
-          'textures'   => false,
           'material_transparency' => false,
+          'glass_highlight' => true,  # перекрашивать стекло на этой карте
           'split_windows' => false,   # разделять по типам стекла
           'shadow_azimuth'   => 45,
           'shadow_elevation' => 45,
@@ -196,7 +199,9 @@ module FacadeExport
         'render_mode'=> 'shaded',
         'edges'      => false,
         'shadows'    => false,
-        'textures'   => true
+        'material_transparency' => false,
+        'glass_highlight' => false, # по умолчанию свою карту стекло не красит
+        'split_windows'   => false
       ).merge(default_glass)
     end
 
@@ -336,9 +341,13 @@ module FacadeExport
         seen[m['key']] = true
         m['title'] = m['key'] if m['title'].to_s.strip.empty?
         m['render_mode'] = 'shaded' unless Config::RENDER_MODES.key?(m['render_mode'])
-        %w[enabled edges shadows textures material_transparency split_windows].each do |key|
+        %w[enabled edges shadows material_transparency split_windows glass_highlight].each do |key|
           m[key] = truthy(m[key])
         end
+        # Текстуры не настраиваются: они есть только в режиме «Затенение».
+        m['textures'] = Config.textures_for(m['render_mode'])
+        # Карта «Окна» всегда красит стекло, у своих карт это галочка.
+        m['glass_highlight'] = true if m['kind'] == 'windows'
         m['shadow_light']     = clamp_int(m['shadow_light'], 0, 100, 100)
         m['shadow_dark']      = clamp_int(m['shadow_dark'], 0, 100, 0)
         m['shadow_azimuth']   = clamp_float(m['shadow_azimuth'], 0.0, 90.0, 45.0)

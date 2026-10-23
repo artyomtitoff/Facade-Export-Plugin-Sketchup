@@ -1,161 +1,97 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Генератор иконок плагина "Экспорт фасадов".
+"""Иконки плагина "Экспорт фасадов" из эскизов автора.
 
-Стиль взят с иконок пользователя (icon1.png / icon2.png):
+Источники (32×32, прозрачный фон) лежат в tools/icons_src/:
 
-  * открытая изометрическая коробка (макет дома) с белым полом внутри;
-  * «Экспорт всех фасадов» — все четыре стены розовые #FFD1D1;
-  * «Экспорт фасада»      — только передняя левая стена сиреневая #D7D9FF;
-  * контур — #3C3C3C.
+  icon_all.png       — «Экспорт всех фасадов»: раскрытая коробка,
+                       все четыре стены розовые;
+  icon_one.png       — «Экспорт фасада»: та же коробка,
+                       выделена только передняя левая стена;
+  icon_settings.png  — «Настройки»: шестерёнка.
 
-Иконки рисуются в 8-кратном разрешении и уменьшаются с LANCZOS —
-так получаются аккуратные края и чистая альфа на 24/32 px.
+Скрипт только приводит их к размерам панели SketchUp (24 и 32 px)
+и собирает превью для документации. Рисунок не перерисовывается.
+
+Уменьшение идёт по премультиплицированной альфе (режим RGBa), поэтому
+по краям не появляется тёмная кайма от прозрачных пикселей.
 
 Запуск:  python3 tools/make_icons.py
 """
 
-import math
 import os
 
-from PIL import Image, ImageDraw
-
-SS = 8                     # суперсэмплинг
-BASE = 256                 # логический размер
-CANVAS = BASE * SS
+from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+SRC_DIR = os.path.join(HERE, "icons_src")
 OUT_DIR = os.path.join(ROOT, "facade_export", "icons")
 DOCS_DIR = os.path.join(ROOT, "docs")
 
-INK   = (60, 60, 60, 255)     # #3C3C3C
-PINK  = (255, 209, 209, 255)  # #FFD1D1
-LILAC = (215, 217, 255, 255)  # #D7D9FF
-WHITE = (255, 255, 255, 255)
+# имя файла-источника -> имя иконки в плагине
+SOURCES = [
+    ("icon_all.png", "export_all"),
+    ("icon_one.png", "export_one"),
+    ("icon_settings.png", "settings"),
+]
 
-OUTLINE = 12
-
-# Геометрия коробки (логические координаты 256×256).
-TOP_T = (128, 28)
-TOP_R = (218, 80)
-TOP_B = (128, 132)
-TOP_L = (38, 80)
-WALL = 84
-
-BOT_R = (TOP_R[0], TOP_R[1] + WALL)
-BOT_B = (TOP_B[0], TOP_B[1] + WALL)
-BOT_L = (TOP_L[0], TOP_L[1] + WALL)
-
-# Внутренний ромб — пол коробки.
-FLOOR = 0.78
-FLOOR_T = (128, 80 - (80 - TOP_T[1]) * FLOOR)
-FLOOR_R = (128 + (TOP_R[0] - 128) * FLOOR, 80)
-FLOOR_B = (128, 80 + (TOP_B[1] - 80) * FLOOR)
-FLOOR_L = (128 - (128 - TOP_L[0]) * FLOOR, 80)
+SIZES = (24, 32)
 
 
-def s(v):
-    return int(round(v * SS))
+def load(name):
+    path = os.path.join(SRC_DIR, name)
+    if not os.path.exists(path):
+        raise SystemExit("Нет файла-источника: %s" % path)
+    return Image.open(path).convert("RGBA")
 
 
-def p(pt):
-    return (s(pt[0]), s(pt[1]))
+def trim(img):
+    """Обрезает пустые поля вокруг рисунка, сохраняя пропорции и поля 1 px."""
+    box = img.getbbox()
+    if box is None:
+        return img
+    return img.crop(box)
 
 
-def poly(draw, pts, fill, outline=None, width=0):
-    pts = [p(pt) for pt in pts]
-    if outline and width:
-        draw.polygon(pts, fill=fill)
-        draw.line(pts + [pts[0]], fill=outline, width=s(width), joint="curve")
-    else:
-        draw.polygon(pts, fill=fill)
+def square_pad(img, pad_ratio=0.06):
+    """Кладёт рисунок в квадрат с одинаковыми полями (иконки в панели ровные)."""
+    w, h = img.size
+    side = max(w, h)
+    pad = int(round(side * pad_ratio))
+    canvas = Image.new("RGBA", (side + pad * 2, side + pad * 2), (0, 0, 0, 0))
+    canvas.paste(img, (pad + (side - w) // 2, pad + (side - h) // 2), img)
+    return canvas
 
 
-def line(draw, pts, color, width):
-    draw.line([p(pt) for pt in pts], fill=color, width=s(width), joint="curve")
-
-
-def box(body, left_face=None, floor=WHITE):
-    """Открытая коробка: стены body, левая стена left_face (если задана)."""
-    img = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-
-    # 1. Внешний силуэт коробки.
-    silhouette = [TOP_T, TOP_R, BOT_R, BOT_B, BOT_L, TOP_L]
-    poly(d, silhouette, body, INK, OUTLINE)
-
-    # 2. Левая (передняя левая) стена — другой цвет.
-    if left_face:
-        wall = [TOP_L, TOP_B, BOT_B, BOT_L]
-        poly(d, wall, left_face)
-        # верхняя кромка этой стены (часть обода)
-        rim = [TOP_L, TOP_B, FLOOR_B, FLOOR_L]
-        poly(d, rim, left_face)
-
-    # 3. Внутренний обод: верхняя плоскость стен вокруг проёма.
-    rim_outer = [TOP_T, TOP_R, TOP_B, TOP_L]
-    line(d, rim_outer + [TOP_T], INK, OUTLINE)
-
-    # 4. Пол внутри коробки.
-    floor_pts = [FLOOR_T, FLOOR_R, FLOOR_B, FLOOR_L]
-    poly(d, floor_pts, floor, INK, OUTLINE)
-
-    # 5. Переднее вертикальное ребро коробки.
-    line(d, [TOP_B, BOT_B], INK, OUTLINE)
-
-    return img
-
-
-def icon_export_all():
-    """Все четыре стены розовые — экспорт всех фасадов."""
-    return box(PINK)
-
-
-def icon_export_one():
-    """Только передняя левая стена сиреневая — экспорт одного фасада."""
-    return box(WHITE, left_face=LILAC)
-
-
-def icon_settings():
-    """Заглушка шестерёнки в той же палитре (пользователь заменит своей)."""
-    img = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    cx, cy = 128, 128
-    r_disc, r_tooth, r_hole, r_ring = 78, 114, 30, 52
-    for i in range(8):
-        ang = math.pi / 4.0 * i
-        half_w = 26
-        pts = []
-        for rr, off in ((r_disc - 8, -half_w), (r_tooth, -half_w * 0.72),
-                        (r_tooth, half_w * 0.72), (r_disc - 8, half_w)):
-            pts.append((cx + rr * math.cos(ang) - off * math.sin(ang),
-                        cy + rr * math.sin(ang) + off * math.cos(ang)))
-        poly(d, pts, INK)
-    d.ellipse([s(cx - r_disc), s(cy - r_disc), s(cx + r_disc), s(cy + r_disc)], fill=INK)
-    d.ellipse([s(cx - r_ring), s(cy - r_ring), s(cx + r_ring), s(cy + r_ring)], fill=WHITE)
-    d.ellipse([s(cx - r_ring + 17), s(cy - r_ring + 17),
-               s(cx + r_ring - 17), s(cy + r_ring - 17)], fill=INK)
-    d.ellipse([s(cx - r_hole), s(cy - r_hole), s(cx + r_hole), s(cy + r_hole)], fill=WHITE)
-    return img
+def resize(img, size):
+    """Уменьшение с премультиплицированной альфой — без тёмной каймы."""
+    return img.convert("RGBa").resize((size, size), Image.LANCZOS).convert("RGBA")
 
 
 def save(img, size, name):
-    img.resize((size, size), Image.LANCZOS).save(
-        os.path.join(OUT_DIR, name), "PNG", optimize=True)
+    out = resize(img, size)
+    out.save(os.path.join(OUT_DIR, name), "PNG", optimize=True)
     print("  %-22s %dx%d" % (name, size, size))
+    return out
 
 
 def make_preview(icons):
-    """Превью: 24 px и 32 px, а также увеличенные версии."""
+    """Превью: 24 px, 32 px и увеличенная версия на светлом и тёмном фоне."""
     pad, col_w = 24, 216
     width = pad + col_w * len(icons)
-    sheet = Image.new("RGBA", (width, 400), (246, 247, 249, 255))
+    sheet = Image.new("RGBA", (width, 470), (246, 247, 249, 255))
     x = pad
     for _key, img in icons:
-        sheet.alpha_composite(img.resize((24, 24), Image.LANCZOS), (x, 26))
-        sheet.alpha_composite(img.resize((32, 32), Image.LANCZOS), (x + 44, 22))
-        sheet.alpha_composite(img.resize((160, 160), Image.LANCZOS), (x, 96))
+        small = resize(img, 24)
+        large = resize(img, 32)
+        sheet.alpha_composite(small, (x, 26))
+        sheet.alpha_composite(large, (x + 44, 22))
+        big = resize(img, 160)
+        sheet.alpha_composite(big, (x, 96))
+        dark = Image.new("RGBA", (160, 160), (70, 72, 78, 255))
+        dark.alpha_composite(big)
+        sheet.alpha_composite(dark, (x, 288))
         x += col_w
     sheet.save(os.path.join(DOCS_DIR, "icons_preview.png"))
 
@@ -163,14 +99,12 @@ def make_preview(icons):
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     os.makedirs(DOCS_DIR, exist_ok=True)
-    icons = [
-        ("export_all", icon_export_all()),
-        ("export_one", icon_export_one()),
-        ("settings", icon_settings()),
-    ]
-    print("Записываю иконки в", OUT_DIR)
-    for key, img in icons:
-        for size in (24, 32):
+    icons = []
+    print("Готовлю иконки из tools/icons_src:")
+    for src, key in SOURCES:
+        img = square_pad(trim(load(src)))
+        icons.append((key, img))
+        for size in SIZES:
             save(img, size, "%s_%d.png" % (key, size))
     make_preview(icons)
     print("Превью: docs/icons_preview.png")

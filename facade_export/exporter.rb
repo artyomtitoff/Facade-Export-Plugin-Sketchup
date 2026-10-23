@@ -16,6 +16,37 @@
 require 'fileutils'
 
 module FacadeExport
+  # Производные признаки карты, которые не хранятся в настройках напрямую.
+  module MapOptions
+    module_function
+
+    # Текстуры есть только в режиме «Затенение» (отдельной галочки нет).
+    def textures?(map)
+      Config.textures_for(map['render_mode'])
+    end
+
+    # Красит ли карта стекло (карта «Окна» — всегда).
+    def glass_highlight?(map)
+      return true if map['kind'].to_s == 'windows'
+      truthy?(map['glass_highlight'])
+    end
+
+    def split_windows?(map)
+      glass_highlight?(map) && truthy?(map['split_windows'])
+    end
+
+    # Название отдельной карты стекла: у карты «Окна» — просто тип стекла,
+    # у своей карты — «Своя карта N — окно-стекло».
+    def glass_title(map, glass_title)
+      return glass_title if map['kind'].to_s == 'windows'
+      "#{map['title']} — #{glass_title}"
+    end
+
+    def truthy?(value)
+      value == true || value == 'true' || value == 1 || value == '1'
+    end
+  end
+
   class Exporter
     Result = Struct.new(:files, :errors, :warnings, :elapsed, :started_at, :per_image,
                         :expected, :directory, :image_width, :image_height, :scope)
@@ -30,17 +61,22 @@ module FacadeExport
       "#{base}_Фасад_#{number}_#{title}.png"
     end
 
-    # Список задач экспорта (окна могут делиться на несколько карт).
+    # Список задач экспорта.
+    #   * карта, которая красит стекло, даёт одну карту «combined»
+    #     (или три раздельные, если включено разделение по типам стекла);
+    #   * остальные карты (Текстура, Линии, Тени и свои без стекла)
+    #     скрывают стеклянные ограждения.
     def self.output_jobs(settings)
       jobs = []
       settings.enabled_maps.each do |map|
-        kind = map['kind'].to_s
-        if kind == 'windows' && map['split_windows']
-          Config::GLASS_TITLES.each do |mode, title|
-            jobs << Job.new(map, mode, title)
+        if MapOptions.glass_highlight?(map)
+          if MapOptions.split_windows?(map)
+            Config::GLASS_TITLES.each do |mode, glass_title|
+              jobs << Job.new(map, mode, MapOptions.glass_title(map, glass_title))
+            end
+          else
+            jobs << Job.new(map, 'combined', map['title'])
           end
-        elsif kind == 'windows'
-          jobs << Job.new(map, 'combined', map['title'])
         else
           jobs << Job.new(map, 'hide_railings', map['title'])
         end
@@ -208,7 +244,7 @@ module FacadeExport
       mode = Config::RENDER_MODES[map['render_mode']] || 2
       style.apply(
         'RenderMode' => mode,
-        'Texture' => map['textures'] ? true : false,
+        'Texture' => MapOptions.textures?(map) ? true : false,
         'EdgeDisplayMode' => map['edges'] ? Config::EDGE_MODES['all'] : Config::EDGE_MODES['none'],
         'MaterialTransparency' => transparency_for(map, job) ? true : false
       )
@@ -234,7 +270,7 @@ module FacadeExport
     # делает материалы частично/полностью прозрачными.
     def transparency_for(map, job)
       return true if map['material_transparency']
-      return true if job.glass_mode != 'combined'
+      return true unless job.glass_mode == 'combined'
       transparent_materials?
     end
 
