@@ -362,11 +362,44 @@ module FacadeExport
     # габариты объекта. Берётся текущий вид пользователя — тот же ракурс,
     # тот же зум, та же композиция. Ограничения остаются прежними:
     #   * параллельная проекция (если включена в настройках);
-    #   * соотношение сторон — как у окна просмотра;
-    #   * размеры — из настроек (большая сторона 9999 px и т.д.);
+    #   * соотношение сторон и размеры — из настроек (4:3, большая сторона
+    #     9999 px), а не из окна просмотра;
     #   * остальные фасады — та же камера, повёрнутая на 90° вокруг цели.
 
+    # Камера переводится в параллельную проекцию до начала экспорта:
+    # сохраняются точка взгляда, цель и направление, а высота кадра
+    # подбирается так, чтобы вместить то же, что вмещала перспектива.
+    def parallel_camera(camera)
+      target = Geom::Point3d.new(camera.target.x, camera.target.y, camera.target.z)
+      eye = Geom::Point3d.new(camera.eye.x, camera.eye.y, camera.eye.z)
+      cam = Sketchup::Camera.new(eye, target, Z_AXIS)
+      begin
+        cam.up = camera.up
+      rescue StandardError
+        nil
+      end
+      begin
+        cam.perspective = false
+      rescue StandardError
+        nil
+      end
+      begin
+        cam.height = visible_frame_height(camera)
+      rescue StandardError
+        nil
+      end
+      cam
+    end
+
+    # Перспективная ли камера (для решения о переключении вида).
+    def perspective?(camera)
+      camera.perspective? == true
+    rescue StandardError
+      false
+    end
+
     # Отношение сторон окна просмотра (ширина / высота).
+    # Используется только как справочное: размер кадра задают настройки.
     def viewport_ratio(view)
       w = begin
         view.vpwidth.to_f
@@ -412,26 +445,30 @@ module FacadeExport
       height > 0.0 ? height : 1000.0
     end
 
-    # Размер картинки в режиме «что на экране»: длинная сторона из настроек,
-    # вторая — по соотношению окна просмотра.
-    def visible_image_size(export_settings, ratio)
+    # Размер картинки в режиме «что на экране».
+    # Соотношение сторон берётся ИЗ НАСТРОЕК (export.aspect), а не из окна
+    # просмотра: размер PNG должен быть одинаковым на любом компьютере.
+    # Длинная сторона — «ширина» из настроек, вторая — по соотношению.
+    def visible_image_size(export_settings)
       longest = export_settings['width'].to_i
       longest = Config::MIN_IMAGE_SIDE if longest < Config::MIN_IMAGE_SIDE
       height = export_settings['height'].to_i
       return [longest, height] if height > 0
-      ratio = 1.0 if ratio.nil? || ratio <= 0.0
+
+      aw, ah = Config.aspect_ratio(export_settings['aspect'])
+      ratio = aw.to_f / ah.to_f
+      ratio = 1.0 if ratio <= 0.0
       side = [(longest * [ratio, 1.0 / ratio].min).round, Config::MIN_IMAGE_SIDE].max
-      # Длинная сторона всегда равна «ширине» из настроек: для вертикального
-      # окна просмотра она уходит в высоту кадра.
       ratio >= 1.0 ? [longest, side] : [side, longest]
     end
 
     # Камеры для всех фасадов в режиме «что на экране».
     # Первая — ровно текущий вид, каждая следующая повёрнута на 90°.
     def visible_cameras(camera, view, export_settings, count = 4, parallel = true)
-      ratio = viewport_ratio(view)
-      width, height = visible_image_size(export_settings, ratio)
+      width, height = visible_image_size(export_settings)
+      ratio = height.to_f.zero? ? 1.0 : width.to_f / height.to_f
       frame_height = visible_frame_height(camera)
+      camera = parallel_camera(camera) if parallel && perspective?(camera)
 
       target = Geom::Point3d.new(camera.target.x, camera.target.y, camera.target.z)
       eye = camera.eye

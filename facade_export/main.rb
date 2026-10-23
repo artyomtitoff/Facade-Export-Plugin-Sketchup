@@ -16,7 +16,7 @@ require_relative 'dialogs'
 
 module FacadeExport
   PLUGIN_NAME = 'Экспорт фасадов'
-  VERSION     = '1.3.0'
+  VERSION     = '1.4.0'
   AUTHOR      = 'Артем Титов motivate_rt'
   PATH = File.expand_path(File.dirname(__FILE__)) unless defined?(PATH) && PATH
 
