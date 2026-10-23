@@ -124,20 +124,13 @@ module FacadeExport
         isolated = isolate_context
         apply_base_style(style)
 
-        directions = Framing.facade_directions(@view.camera, @facade_count)
-        bounds, scope = Framing.content_bounds(@model)
-        plan = Framing.plan(bounds, directions, @settings.export)
+        parallel = @settings.parallel_projection?
+        visible = @settings.exp('visible_area') ? true : false
+        directions, cameras, plan, scope = build_cameras(parallel, visible)
+
         @result.scope = scope
         @result.image_width = plan[:image_width]
         @result.image_height = plan[:image_height]
-
-        parallel = @settings.parallel_projection?
-        cameras = directions.each_with_index.map do |direction, index|
-          Framing.build_camera(
-            bounds, direction, plan[:projections][index], plan[:scale],
-            plan[:image_width], plan[:image_height], plan[:gap], parallel
-          )
-        end
 
         jobs = Exporter.output_jobs(@settings)
         total = jobs.length * @facade_count
@@ -171,6 +164,30 @@ module FacadeExport
     # --------------------------------------------------------------- private
 
     private
+
+    # Строит направления, камеры и размер кадра.
+    #   * обычный режим — кадр по габаритам объекта (Framing.plan);
+    #   * «только видимый участок» — кадр как на экране (Framing.visible_cameras).
+    def build_cameras(parallel, visible)
+      if visible
+        directions = Framing.facade_directions(@view.camera, @facade_count)
+        plan, cameras = Framing.visible_cameras(
+          @view.camera, @view, @settings.export, @facade_count, parallel
+        )
+        return [directions, cameras, plan, :visible]
+      end
+
+      directions = Framing.facade_directions(@view.camera, @facade_count)
+      bounds, scope = Framing.content_bounds(@model)
+      plan = Framing.plan(bounds, directions, @settings.export)
+      cameras = directions.each_with_index.map do |direction, index|
+        Framing.build_camera(
+          bounds, direction, plan[:projections][index], plan[:scale],
+          plan[:image_width], plan[:image_height], plan[:gap], parallel
+        )
+      end
+      [directions, cameras, plan, scope]
+    end
 
     def validate!
       raise ExportError, 'Нет активной модели SketchUp.' if @model.nil?

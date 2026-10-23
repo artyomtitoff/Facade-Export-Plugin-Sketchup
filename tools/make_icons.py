@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Иконки плагина "Экспорт фасадов" из эскизов автора.
+"""Иконки плагина "Экспорт фасадов" — из эскизов автора, без правок рисунка.
 
 Источники (32×32, прозрачный фон) лежат в tools/icons_src/:
 
@@ -10,16 +10,16 @@
                        выделена только передняя левая стена;
   icon_settings.png  — «Настройки»: шестерёнка.
 
-Скрипт только приводит их к размерам панели SketchUp (24 и 32 px)
-и собирает превью для документации. Рисунок не перерисовывается.
-
-Уменьшение идёт по премультиплицированной альфе (режим RGBa), поэтому
-по краям не появляется тёмная кайма от прозрачных пикселей.
+Файл *_32.png — это ровно исходный PNG автора (копируется байт в байт).
+Файл *_24.png — единственное, что делает скрипт: уменьшение 32 → 24
+(панель SketchUp на Windows берёт 24 px). Уменьшение идёт с
+премультиплицированной альфой, поэтому по краям не появляется тёмная кайма.
 
 Запуск:  python3 tools/make_icons.py
 """
 
 import os
+import shutil
 
 from PIL import Image
 
@@ -29,65 +29,52 @@ SRC_DIR = os.path.join(HERE, "icons_src")
 OUT_DIR = os.path.join(ROOT, "facade_export", "icons")
 DOCS_DIR = os.path.join(ROOT, "docs")
 
-# имя файла-источника -> имя иконки в плагине
+# файл автора -> имя иконки в плагине
 SOURCES = [
     ("icon_all.png", "export_all"),
     ("icon_one.png", "export_one"),
     ("icon_settings.png", "settings"),
 ]
 
-SIZES = (24, 32)
+SMALL = 24      # размер для панели инструментов
+LARGE = 32      # исходный размер автора (не меняется)
 
 
-def load(name):
+def source_path(name):
     path = os.path.join(SRC_DIR, name)
     if not os.path.exists(path):
         raise SystemExit("Нет файла-источника: %s" % path)
-    return Image.open(path).convert("RGBA")
+    return path
 
 
-def trim(img):
-    """Обрезает пустые поля вокруг рисунка, сохраняя пропорции и поля 1 px."""
-    box = img.getbbox()
-    if box is None:
-        return img
-    return img.crop(box)
+def copy_large(src, key):
+    """32×32 — исходный файл автора без единого изменения."""
+    dst = os.path.join(OUT_DIR, "%s_%d.png" % (key, LARGE))
+    if os.path.abspath(src) != os.path.abspath(dst):
+        shutil.copyfile(src, dst)
+    print("  %-22s %dx%d (копия исходника)" % (os.path.basename(dst), LARGE, LARGE))
+    return Image.open(dst).convert("RGBA")
 
 
-def square_pad(img, pad_ratio=0.06):
-    """Кладёт рисунок в квадрат с одинаковыми полями (иконки в панели ровные)."""
-    w, h = img.size
-    side = max(w, h)
-    pad = int(round(side * pad_ratio))
-    canvas = Image.new("RGBA", (side + pad * 2, side + pad * 2), (0, 0, 0, 0))
-    canvas.paste(img, (pad + (side - w) // 2, pad + (side - h) // 2), img)
-    return canvas
-
-
-def resize(img, size):
-    """Уменьшение с премультиплицированной альфой — без тёмной каймы."""
-    return img.convert("RGBa").resize((size, size), Image.LANCZOS).convert("RGBA")
-
-
-def save(img, size, name):
-    out = resize(img, size)
-    out.save(os.path.join(OUT_DIR, name), "PNG", optimize=True)
-    print("  %-22s %dx%d" % (name, size, size))
-    return out
+def make_small(img, key):
+    """24×24 — уменьшение с премультиплицированной альфой."""
+    small = img.convert("RGBa").resize((SMALL, SMALL), Image.LANCZOS).convert("RGBA")
+    dst = os.path.join(OUT_DIR, "%s_%d.png" % (key, SMALL))
+    small.save(dst, "PNG", optimize=True)
+    print("  %-22s %dx%d" % (os.path.basename(dst), SMALL, SMALL))
+    return small
 
 
 def make_preview(icons):
-    """Превью: 24 px, 32 px и увеличенная версия на светлом и тёмном фоне."""
+    """Превью: 24 px, 32 px и увеличенные версии на светлом и тёмном фоне."""
     pad, col_w = 24, 216
     width = pad + col_w * len(icons)
     sheet = Image.new("RGBA", (width, 470), (246, 247, 249, 255))
     x = pad
-    for _key, img in icons:
-        small = resize(img, 24)
-        large = resize(img, 32)
+    for _key, large, small in icons:
         sheet.alpha_composite(small, (x, 26))
         sheet.alpha_composite(large, (x + 44, 22))
-        big = resize(img, 160)
+        big = large.convert("RGBa").resize((160, 160), Image.LANCZOS).convert("RGBA")
         sheet.alpha_composite(big, (x, 96))
         dark = Image.new("RGBA", (160, 160), (70, 72, 78, 255))
         dark.alpha_composite(big)
@@ -100,12 +87,11 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     os.makedirs(DOCS_DIR, exist_ok=True)
     icons = []
-    print("Готовлю иконки из tools/icons_src:")
+    print("Иконки автора (tools/icons_src):")
     for src, key in SOURCES:
-        img = square_pad(trim(load(src)))
-        icons.append((key, img))
-        for size in SIZES:
-            save(img, size, "%s_%d.png" % (key, size))
+        large = copy_large(source_path(src), key)
+        small = make_small(large, key)
+        icons.append((key, large, small))
     make_preview(icons)
     print("Превью: docs/icons_preview.png")
 

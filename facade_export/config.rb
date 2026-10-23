@@ -35,16 +35,16 @@ module FacadeExport
       'standalone' => 2
     }.freeze
 
-    # Соотношения сторон кадра. Первое число — "ширина" кадра,
-    # для вертикальных объектов соотношение разворачивается.
+    # Соотношения сторон кадра. Всегда записываются «широкой» стороной:
+    # для вертикальных объектов (башен, небоскрёбов) плагин сам разворачивает
+    # кадр, поэтому отдельные вертикальные варианты (3:4, 2:3, 9:16) не нужны.
     ASPECTS = {
       '4:3'  => [4, 3],
       '3:2'  => [3, 2],
       '16:9' => [16, 9],
-      '1:1'  => [1, 1],
-      '3:4'  => [3, 4],
-      '2:3'  => [2, 3],
-      '9:16' => [9, 16]
+      '2:1'  => [2, 1],
+      '3:1'  => [3, 1],
+      '1:1'  => [1, 1]
     }.freeze
 
     DEFAULT_ASPECT = '4:3'.freeze
@@ -89,6 +89,9 @@ module FacadeExport
         'margin'          => 0.02,      # зазор от края, доля большей стороны
         'restore_view'    => true,      # возвращать вид и стиль после экспорта
         'show_report'     => true,      # показывать отчёт
+        # Показать ровно то, что видно в окне SketchUp: кадр не подгоняется
+        # под габариты объекта, масштаб и композиция берутся с экрана.
+        'visible_area'    => false,
 
         # Расширенные
         'aspect'          => DEFAULT_ASPECT,
@@ -322,7 +325,7 @@ module FacadeExport
 
       %w[restore_view show_report sun_for_shading use_view_size antialias
          transparent show_sky show_ground hide_guides hide_annotations
-         hide_watermarks show_section_planes].each do |key|
+         hide_watermarks show_section_planes visible_area].each do |key|
         e[key] = truthy(e[key])
       end
       e['background'] = '#FFFFFF' if e['background'].to_s.strip.empty?
