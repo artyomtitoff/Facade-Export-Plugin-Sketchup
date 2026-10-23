@@ -22,10 +22,12 @@ module FacadeExport
     MODES = %w[combined main tinted railing hide_railings].freeze
     TYPES = %w[main tinted railing].freeze
 
-    # Один найденный стеклянный материал: материал, его непрозрачность и тип.
-    Entry = Struct.new(:material, :alpha, :type)
+    # Один найденный материал: материал, его непрозрачность, тип и текстура.
+    # Тип 'opaque' — непрозрачный материал с текстурой (на карте окон он
+    # отбеливается, чтобы на карте остались только окна).
+    Entry = Struct.new(:material, :alpha, :type, :texture)
 
-    attr_reader :recolored, :hidden, :entries
+    attr_reader :recolored, :hidden, :whitened, :entries
 
     # Один раз просматривает материалы модели и возвращает список стекла.
     # Дальше этот список переиспользуется для всех карт и фасадов — плагин
@@ -35,6 +37,7 @@ module FacadeExport
       railing_max = (options[:railing_max] || Config::GLASS_RAILING_MAX).to_f
       tinted_min  = (options[:tinted_min] || Config::GLASS_TINTED_MIN).to_f
       opaque_min  = (options[:opaque_min] || Config::GLASS_OPAQUE_MIN).to_f
+      include_opaque = options[:include_opaque] ? true : false
       list = []
       materials = begin
         model.materials
@@ -47,13 +50,31 @@ module FacadeExport
           alpha = alpha_of(mat)
           next if alpha.nil?
           type = type_for(alpha * 100.0, railing_max, tinted_min, opaque_min)
-          next if type.nil?
-          list << Entry.new(mat, alpha, type)
+          if type.nil?
+            next unless include_opaque
+            # Обычный непрозрачный материал: на карте окон важно отбелить
+            # только текстуры, поэтому материалы без текстуры не трогаем.
+            texture = texture_filename(mat)
+            next if texture.nil?
+            list << Entry.new(mat, alpha, 'opaque', texture)
+            next
+          end
+          list << Entry.new(mat, alpha, type, nil)
         rescue StandardError => e
           FacadeExport.log("Материал пропущен: #{e.message}")
         end
       end
       list
+    end
+
+    # Путь к текстуре материала (nil, если текстуры нет).
+    def self.texture_filename(mat)
+      texture = mat.texture
+      return nil if texture.nil?
+      name = texture.filename.to_s
+      name.empty? ? nil : name
+    rescue StandardError
+      nil
     end
 
     def self.alpha_of(mat)
@@ -83,10 +104,12 @@ module FacadeExport
       @tinted_min  = (options[:tinted_min] || Config::GLASS_TINTED_MIN).to_f
       @opaque_min  = (options[:opaque_min] || Config::GLASS_OPAQUE_MIN).to_f
       @entries = options[:entries]
+      @whiten_opaque = options[:whiten_opaque] ? true : false
       @saved = []
       @applied = false
       @recolored = 0
       @hidden = 0
+      @whitened = 0
     end
 
     def applied?
@@ -106,15 +129,16 @@ module FacadeExport
         end
       end
       @applied = true
-      @recolored + @hidden
+      @recolored + @hidden + @whitened
     end
 
-    # Список стекла: заранее посчитанный (options[:entries]) или свой.
+    # Список материалов: заранее посчитанный (options[:entries]) или свой.
     def entries
       @entries ||= self.class.scan(@model,
                                    :railing_max => @railing_max,
                                    :tinted_min => @tinted_min,
-                                   :opaque_min => @opaque_min)
+                                   :opaque_min => @opaque_min,
+                                   :include_opaque => @whiten_opaque)
     end
 
     # Возвращает исходные цвета, непрозрачность и текстуры.
@@ -144,6 +168,7 @@ module FacadeExport
       @applied = false
       @recolored = 0
       @hidden = 0
+      @whitened = 0
       true
     end
 
@@ -162,8 +187,11 @@ module FacadeExport
     #           (карты текстур/линий/теней: стекло там не должно просвечивать
     #           и пропускать свет — иначе видны предметы за фасадом и нет тени),
     # :hide   — сделать полностью прозрачным (ограждения на «не оконных» картах),
+    # :white  — убрать текстуру и покрасить в белый (непрозрачные материалы на
+    #           карте окон: на карте должны остаться только окна),
     # nil     — не трогать.
     def action_for(type)
+      return(@whiten_opaque ? :white : nil) if type == 'opaque'
       case @mode
       when 'combined'
         :color
@@ -178,7 +206,7 @@ module FacadeExport
       mat = entry.material
       # Полное состояние (с текстурой) нужно только при перекраске:
       # для «сделать непрозрачным» и «скрыть» меняется одна непрозрачность.
-      state = save_state(mat, entry.alpha, action == :color)
+      state = save_state(mat, entry.alpha, action == :color || action == :white)
       case action
       when :color
         color = @colors[entry.type] || @colors['main'] || [0, 255, 21]
@@ -192,6 +220,10 @@ module FacadeExport
       when :hide
         mat.alpha = 0.0
         @hidden += 1
+      when :white
+        mat.texture = nil
+        mat.color = Sketchup::Color.new(255, 255, 255)
+        @whitened += 1
       end
       @saved << state
     end

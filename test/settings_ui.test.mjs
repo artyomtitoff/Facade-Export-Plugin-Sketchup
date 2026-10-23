@@ -242,17 +242,21 @@ check("Палитра ограждений отрисована",
 /* ------------------------------------ п. 8: расклеенные колонки */
 
 const css = html.slice(html.indexOf("<style>"), html.indexOf("</style>"));
-const gapMatch = /column-gap:\s*(\d+)px/.exec(css);
-check("Двухколоночная сетка: зазор между столбцами ≥ 48 px",
-  gapMatch !== null && Number(gapMatch[1]) >= 48, gapMatch && gapMatch[0]);
-check("Между столбцами есть разделительная линия",
-  /\.grid\.split::before/.test(css) && /left:\s*calc\(50% - 0\.5px\)/.test(css));
-check("Двухколоночные блоки используют разделитель",
-  doc.querySelectorAll(".grid.split").length >= 4,
-  doc.querySelectorAll(".grid.split").length);
+const oddRule = /\.grid > \*:nth-child\(odd\)\s*\{[^}]*margin-right:\s*(\d+)px/.exec(css);
+check("Двухколоночная сетка: между столбцами ≥ 48 px",
+  oddRule !== null && Number(oddRule[1]) >= 48, oddRule && oddRule[0]);
+check("Ширина колонки задана явно (calc), а не только через gap",
+  /\.grid > \*\s*\{[^}]*flex:\s*0 0 calc\(50%/.test(css.replace(/\n/g, " ")));
+check("Полоски-разделителя между столбцами больше нет",
+  !/\.grid[^{]*::before/.test(css) && !html.includes('class="grid split"'),
+  /\.[a-z.]+::before/.exec(css)?.[0]);
+check("Поля не выходят за свой столбец",
+  /max-width:\s*100%/.test(css) && /min-width:\s*0/.test(css));
 check("В левом столбце карты — поле имени, в правом — выпадающий список",
-  byPath("maps.2.title")?.closest(".grid")?.classList.contains("split") === true &&
+  byPath("maps.2.title")?.closest(".grid") !== null &&
   byPath("maps.2.render_mode")?.tagName === "SELECT");
+check("Одноколоночные блоки не получают отступ справа",
+  /\.grid\.one > \*\s*\{[^}]*margin-right:\s*0/.test(css.replace(/\n/g, " ")));
 check("Подвал не сжимается: footer с flex 0 0 auto",
   /footer\s*\{[^}]*flex:\s*0 0 auto/.test(css.replace(/\n/g, " ")));
 check("Прокручивается только содержимое (main с min-height 0)",

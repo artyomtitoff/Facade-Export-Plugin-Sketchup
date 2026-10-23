@@ -135,53 +135,81 @@ module FacadeExport
       [box, :context]
     end
 
-    # Сброс кэша габаритов определений. Нужен перед каждым экспортом:
-    # видимость объектов внутри компонентов могла измениться.
+    # Сброс кэшей габаритов. Нужен перед каждым экспортом: видимость
+    # объектов внутри компонентов могла измениться.
     def reset_cache!
       @definition_cache = {}
-    end
-
-    # Габариты только видимой геометрии: рёбра и грани, которые реально
-    # рисуются, плюс видимые объекты внутри групп и компонентов.
-    # transform — преобразование из координат контекста в координаты модели.
-    def visible_bounds(entities, transform = nil)
-      transform ||= Geom::Transformation.new
-      box = Geom::BoundingBox.new
-      collect_visible_points(entities, transform, box, 0)
-      box
+      @layer_cache = {}
+      @kind_cache = {}
+      @support_cache = {}
     end
 
     # Максимальная глубина вложенности групп/компонентов при обходе.
     MAX_DEPTH = 32
 
-    def collect_visible_points(entities, transform, box, depth)
-      return box if entities.nil? || depth > MAX_DEPTH
-      entities.each do |entity|
-        next unless entity_visible?(entity)
-        add_visible_points(entity, transform, box, depth)
-      end
+    # Габариты только видимой геометрии: рёбра и грани, которые реально
+    # рисуются, плюс видимое содержимое групп и компонентов.
+    # transform — преобразование из координат контекста в координаты модели.
+    def visible_bounds(entities, transform = nil)
+      box = Geom::BoundingBox.new
+      collect_visible(entities, transform, box, 0)
       box
     end
 
-    def add_visible_points(entity, transform, box, depth)
-      if edge_entity?(entity)
-        add_point(box, entity.start, transform)
-        add_point(box, entity.end, transform)
-      elsif face_entity?(entity)
-        face_points(entity).each { |pt| add_point(box, pt, transform) }
-      elsif instance_entity?(entity)
-        add_instance_points(entity, transform, box, depth)
-      elsif entity.respond_to?(:bounds) && !annotation_class?(entity)
-        # Прочие видимые объекты (например, изображения) — по их габаритам.
-        local = safe_bounds(entity)
-        add_local_box(box, local, transform) unless local.nil? || local.empty?
+    # Обход сделан «дешёвым»: тип сущности определяется один раз на класс
+    # (кэш @kind_cache), видимость метки — один раз на метку (@layer_cache),
+    # а габариты видимого ребра/грани берутся готовыми (`entity.bounds`).
+    # На больших моделях это в разы быстрее, чем is_a?/respond_to? на каждый
+    # из сотен тысяч объектов.
+    def collect_visible(entities, transform, box, depth)
+      return box if entities.nil? || depth > MAX_DEPTH
+      entities.each do |entity|
+        klass = entity.class
+        next if supports?(klass, :hidden?, nil) && entity.hidden?
+        kind = entity_kind(entity)
+        next if kind == :annotation || kind == :skip
+        next unless layer_visible?(entity, klass)
+        if kind == :instance
+          add_instance_bounds(entity, transform, box, depth)
+        else
+          # Видимое ребро, грань или картинка: габариты объекта точные.
+          add_entity_bounds(entity, transform, box)
+        end
       end
+      box
     rescue StandardError => e
-      FacadeExport.log("Габариты: объект пропущен (#{e.message})")
+      FacadeExport.log("Габариты: обход прерван (#{e.message})")
+      box
     end
 
-    # Группа/компонент: спускаемся внутрь и считаем только видимое.
-    def add_instance_points(instance, transform, box, depth)
+    # Тип сущности по её классу (результат кэшируется для класса).
+    def entity_kind(entity)
+      klass = entity.class
+      cache = (@kind_cache ||= {})
+      cached = cache[klass]
+      return cached if cached
+      cache[klass] = classify_entity(entity)
+    end
+
+    def classify_entity(entity)
+      return :skip if annotation_class?(entity)
+      return :instance if instance_entity?(entity)
+      return :other if edge_entity?(entity) || face_entity?(entity)
+      return :other if entity.respond_to?(:bounds)
+      :skip
+    rescue StandardError
+      :skip
+    end
+
+    def add_entity_bounds(entity, transform, box)
+      bounds = safe_bounds(entity)
+      return if bounds.nil? || bounds.empty?
+      add_local_box(box, bounds, transform)
+    end
+
+    # Группа/компонент: берём габариты содержимого определения (кэш) и
+    # переносим их преобразованием экземпляра.
+    def add_instance_bounds(instance, transform, box, depth)
       definition = begin
         instance.definition
       rescue StandardError
@@ -190,17 +218,16 @@ module FacadeExport
       return if definition.nil?
       local = definition_visible_bounds(definition, depth)
       return if local.nil? || local.empty?
-      world = transform * instance.transformation
-      if translation_only?(world)
-        # Перенос не искажает габариты — можно взять готовый кэш.
-        add_local_box(box, local, world)
-      else
-        # Поворот/масштаб: считаем точные мировые координаты.
-        collect_visible_points(definition.entities, world, box, depth + 1)
+      own = begin
+        instance.transformation
+      rescue StandardError
+        nil
       end
+      world = own.nil? ? transform : (transform.nil? ? own : transform * own)
+      add_local_box(box, local, world)
     end
 
-    # Габариты содержимого определения в его собственных координатах (кэш).
+    # Габариты видимого содержимого определения в его собственных координатах.
     def definition_visible_bounds(definition, depth = 0)
       @definition_cache ||= {}
       key = begin
@@ -211,28 +238,57 @@ module FacadeExport
       cached = @definition_cache[key]
       return cached if cached
       box = Geom::BoundingBox.new
-      collect_visible_points(definition.entities, Geom::Transformation.new, box, depth + 1)
+      collect_visible(definition.entities, nil, box, depth + 1)
       @definition_cache[key] = box
       box
     end
 
     def add_local_box(box, local, transform)
-      bbox_corners(local).each { |pt| box.add(pt.transform(transform)) }
+      if transform.nil?
+        bbox_corners(local).each { |pt| box.add(pt) }
+      else
+        bbox_corners(local).each { |pt| box.add(pt.transform(transform)) }
+      end
     end
 
-    def add_point(box, point, transform)
-      return if point.nil?
-      box.add(transform.nil? ? point : point.transform(transform))
+    # Есть ли у класса сущности такой метод (проверяется один раз на класс:
+    # respond_to? на каждый объект большой модели заметно замедляет обход).
+    def supports?(klass, method, cache)
+      cache = (@support_cache ||= {})[method] ||= {} if cache.nil?
+      cached = cache[klass]
+      return cached unless cached.nil?
+      cache[klass] = begin
+        klass.method_defined?(method) || klass.private_method_defined?(method)
+      rescue StandardError
+        true
+      end
     end
 
-    # В преобразовании нет поворота/масштаба — только перенос.
-    def translation_only?(transform)
-      a = transform.to_a
-      [[0, 1.0], [1, 0.0], [2, 0.0],
-       [4, 0.0], [5, 1.0], [6, 0.0],
-       [8, 0.0], [9, 0.0], [10, 1.0]].all? { |i, v| (a[i].to_f - v).abs < 1.0e-9 }
-    rescue StandardError
-      false
+    # Видима ли метка (тег) сущности и её папка. Результат кэшируется
+    # по объекту метки: у модели обычно десятки меток, а сущностей — тысячи.
+    def layer_visible?(entity, klass = entity.class)
+      layer = begin
+        supports?(klass, :layer, nil) ? entity.layer : nil
+      rescue StandardError
+        nil
+      end
+      return true if layer.nil?
+      cache = (@layer_cache ||= {})
+      key = layer.object_id
+      cached = cache[key]
+      return cached unless cached.nil?
+      cache[key] = layer_visible_object?(layer)
+    end
+
+    def layer_visible_object?(layer)
+      return false if layer.respond_to?(:visible?) && layer.visible? == false
+      folder = begin
+        layer.respond_to?(:folder) ? layer.folder : nil
+      rescue StandardError
+        nil
+      end
+      return false if folder && folder.respond_to?(:visible?) && folder.visible? == false
+      true
     end
 
     def edge_entity?(entity)
@@ -259,22 +315,23 @@ module FacadeExport
     # Точки грани: внешний контур и отверстия.
     def face_points(face)
       points = []
+      vertices = begin
+        face.vertices
+      rescue StandardError
+        nil
+      end
+      if vertices
+        vertices.each { |v| points << v.position }
+        return points
+      end
       loops = begin
         face.loops
       rescue StandardError
         nil
       end
-      if loops
-        loops.each do |loop|
-          begin
-            loop.vertices.each { |v| points << v.position }
-          rescue StandardError
-            nil
-          end
-        end
-      else
+      Array(loops).each do |loop|
         begin
-          face.vertices.each { |v| points << v.position }
+          loop.vertices.each { |v| points << v.position }
         rescue StandardError
           nil
         end
@@ -312,21 +369,7 @@ module FacadeExport
     def entity_visible?(entity)
       return false if annotation_class?(entity)
       return false if entity.respond_to?(:hidden?) && entity.hidden?
-      layer = begin
-        entity.respond_to?(:layer) ? entity.layer : nil
-      rescue StandardError
-        nil
-      end
-      if layer
-        return false if layer.respond_to?(:visible?) && layer.visible? == false
-        folder = begin
-          layer.respond_to?(:folder) ? layer.folder : nil
-        rescue StandardError
-          nil
-        end
-        return false if folder && folder.respond_to?(:visible?) && folder.visible? == false
-      end
-      true
+      layer_visible?(entity)
     end
 
     # Проекция габаритов на плоскость кадра для одного направления взгляда.
