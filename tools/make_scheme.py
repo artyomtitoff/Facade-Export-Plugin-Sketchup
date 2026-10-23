@@ -19,10 +19,12 @@ FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 LEFT = 252            # ширина колонки с названиями карт
-CELL_W, CELL_H = 278, 152
+# Кадр по умолчанию — 4:3 (9999 × 7499 px), поэтому и ячейки схемы 4:3.
+CELL_W = 268
+CELL_H = round(CELL_W * 3 / 4)
 GAP_X, GAP_Y = 24, 22
 MARGIN = 26
-TOP = 118
+TOP = 158
 
 BG = (247, 248, 250)
 PANEL = (255, 255, 255)
@@ -50,11 +52,12 @@ def draw_house(d, box, *, wall=None, roof=None, outline=INK, windows_fill=None,
 
     # тень на земле: солнце слева сверху -> тень вправо-вниз
     if shadow:
+        # тень остаётся внутри ячейки: схема не «залезает» на соседний кадр
         d.polygon([
-            (x0 + w * 0.05, y1),
-            (x1 + w * 0.34, y1 + h * 0.10),
-            (x1 + w * 0.34, y1 + h * 0.20),
-            (x0 + w * 0.05, y1 + h * 0.10),
+            (x0 + w * 0.02, y1),
+            (x1 + w * 0.12, y1 + h * 0.055),
+            (x1 + w * 0.12, y1 + h * 0.115),
+            (x0 + w * 0.02, y1 + h * 0.06),
         ], fill=SHADOW)
         # затенённая правая часть стены
         d.polygon([(x1 - w * 0.10, roof_y), (x1, roof_y), (x1, y1),
@@ -106,6 +109,10 @@ def main():
     d.text((MARGIN, 60),
            "Имя_Фасад_Номер_Карта.png   ·   например  Заречная_Фасад_1_Текстура.png",
            font=font(14), fill=MUTED)
+    d.text((MARGIN, 86),
+           "Кадр 4:3 · 9999 × 7499 px · единый масштаб по самому большому фасаду · "
+           "в кадре только видимые линии и грани",
+           font=font(12), fill=MUTED)
 
     maps = [
         ("Текстура", ["текстуры,", "без линий"]),
@@ -129,7 +136,8 @@ def main():
             x = LEFT + col * (CELL_W + GAP_X)
             d.rounded_rectangle([x, y, x + CELL_W, y + CELL_H], radius=10,
                                 fill=PANEL, outline=BORDER, width=1)
-            box = (x + 66, y + 26, x + CELL_W - 66, y + CELL_H - 34)
+            # нижний запас — место для тени на земле и подписи с именем файла
+            box = (x + 26, y + 26, x + CELL_W - 26, y + CELL_H - 58)
 
             if name == "Текстура":
                 draw_house(d, box, wall=BRICK, roof=ROOF, brick=True,
@@ -146,7 +154,8 @@ def main():
                    font=font(10), fill=MUTED, anchor="mm")
 
     footer = ("Все 16 кадров — одного размера и одного масштаба, поэтому карты "
-              "совмещаются пиксель в пиксель в фоторедакторе.")
+              "совмещаются пиксель в пиксель в фоторедакторе. Скрытая геометрия, "
+              "метки, направляющие, сечения и тексты в кадр не попадают.")
     d.text((MARGIN, H - 34), footer, font=font(12), fill=MUTED)
 
     os.makedirs(os.path.dirname(OUT), exist_ok=True)

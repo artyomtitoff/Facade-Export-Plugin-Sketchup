@@ -92,16 +92,27 @@ module FacadeExport
     #   :model   — вся модель;
     #   :context — содержимое группы/компонента, внутри которого сейчас пользователь.
     # Возвращает [габариты, режим].
+    #
+    # Габариты строятся только по видимым линиям и граням: скрытые объекты,
+    # геометрия со скрытых меток (тегов), направляющие, сечения, размеры и
+    # тексты в кадр не входят. Раньше в расчёт попадал `entity.bounds`, и
+    # спрятанная геометрия растягивала кадр — фасад уходил в вертикальное
+    # соотношение с огромным отступом.
     def content_bounds(model)
+      reset_cache!
       path = begin
         model.active_path
       rescue StandardError
         nil
       end
       if path.nil? || path.empty?
-        visible = visible_bounds(model.entities)
-        return [visible, :model] unless visible.empty?
-        return [model.bounds, :model]
+        box = visible_bounds(model.entities)
+        if box.empty?
+          raise ExportError, 'В модели нет видимых линий и граней: всё скрыто или ' \
+                             'лежит на скрытых метках. Включите нужную геометрию ' \
+                             'и повторите экспорт.'
+        end
+        return [box, :model]
       end
 
       transform = Geom::Transformation.new
@@ -115,35 +126,166 @@ module FacadeExport
       end
       raise ExportError, 'Не удалось определить габариты открытой группы.' if definition.nil?
 
-      # Внутри группы тоже кадрируем только видимое содержимое, чтобы
-      # скрытая геометрия не превращала фасад в маленькое пятно на листе.
-      visible = visible_bounds(definition.entities, transform)
-      return [visible, :context] unless visible.empty?
-
-      corners = bbox_corners(definition.bounds).map { |pt| pt.transform(transform) }
-      [bounds_from_points(corners), :context]
+      # Внутри группы тоже кадрируем только видимое содержимое.
+      box = visible_bounds(definition.entities, transform)
+      if box.empty?
+        raise ExportError, 'В открытой группе нет видимых линий и граней. ' \
+                           'Выйдите из группы или включите её геометрию.'
+      end
+      [box, :context]
     end
 
-    # Габариты только видимых сущностей (скрытые и выключенные теги не в счёт).
+    # Сброс кэша габаритов определений. Нужен перед каждым экспортом:
+    # видимость объектов внутри компонентов могла измениться.
+    def reset_cache!
+      @definition_cache = {}
+    end
+
+    # Габариты только видимой геометрии: рёбра и грани, которые реально
+    # рисуются, плюс видимые объекты внутри групп и компонентов.
     # transform — преобразование из координат контекста в координаты модели.
     def visible_bounds(entities, transform = nil)
+      transform ||= Geom::Transformation.new
       box = Geom::BoundingBox.new
+      collect_visible_points(entities, transform, box, 0)
+      box
+    end
+
+    # Максимальная глубина вложенности групп/компонентов при обходе.
+    MAX_DEPTH = 32
+
+    def collect_visible_points(entities, transform, box, depth)
+      return box if entities.nil? || depth > MAX_DEPTH
       entities.each do |entity|
         next unless entity_visible?(entity)
-        bounds = begin
-          entity.bounds
+        add_visible_points(entity, transform, box, depth)
+      end
+      box
+    end
+
+    def add_visible_points(entity, transform, box, depth)
+      if edge_entity?(entity)
+        add_point(box, entity.start, transform)
+        add_point(box, entity.end, transform)
+      elsif face_entity?(entity)
+        face_points(entity).each { |pt| add_point(box, pt, transform) }
+      elsif instance_entity?(entity)
+        add_instance_points(entity, transform, box, depth)
+      elsif entity.respond_to?(:bounds) && !annotation_class?(entity)
+        # Прочие видимые объекты (например, изображения) — по их габаритам.
+        local = safe_bounds(entity)
+        add_local_box(box, local, transform) unless local.nil? || local.empty?
+      end
+    rescue StandardError => e
+      FacadeExport.log("Габариты: объект пропущен (#{e.message})")
+    end
+
+    # Группа/компонент: спускаемся внутрь и считаем только видимое.
+    def add_instance_points(instance, transform, box, depth)
+      definition = begin
+        instance.definition
+      rescue StandardError
+        nil
+      end
+      return if definition.nil?
+      local = definition_visible_bounds(definition, depth)
+      return if local.nil? || local.empty?
+      world = transform * instance.transformation
+      if translation_only?(world)
+        # Перенос не искажает габариты — можно взять готовый кэш.
+        add_local_box(box, local, world)
+      else
+        # Поворот/масштаб: считаем точные мировые координаты.
+        collect_visible_points(definition.entities, world, box, depth + 1)
+      end
+    end
+
+    # Габариты содержимого определения в его собственных координатах (кэш).
+    def definition_visible_bounds(definition, depth = 0)
+      @definition_cache ||= {}
+      key = begin
+        definition.respond_to?(:entityID) ? definition.entityID : definition.object_id
+      rescue StandardError
+        definition.object_id
+      end
+      cached = @definition_cache[key]
+      return cached if cached
+      box = Geom::BoundingBox.new
+      collect_visible_points(definition.entities, Geom::Transformation.new, box, depth + 1)
+      @definition_cache[key] = box
+      box
+    end
+
+    def add_local_box(box, local, transform)
+      bbox_corners(local).each { |pt| box.add(pt.transform(transform)) }
+    end
+
+    def add_point(box, point, transform)
+      return if point.nil?
+      box.add(transform.nil? ? point : point.transform(transform))
+    end
+
+    # В преобразовании нет поворота/масштаба — только перенос.
+    def translation_only?(transform)
+      a = transform.to_a
+      [[0, 1.0], [1, 0.0], [2, 0.0],
+       [4, 0.0], [5, 1.0], [6, 0.0],
+       [8, 0.0], [9, 0.0], [10, 1.0]].all? { |i, v| (a[i].to_f - v).abs < 1.0e-9 }
+    rescue StandardError
+      false
+    end
+
+    def edge_entity?(entity)
+      return true if defined?(Sketchup::Edge) && entity.is_a?(Sketchup::Edge)
+      entity.respond_to?(:start) && entity.respond_to?(:end) &&
+        !entity.respond_to?(:vertices)
+    rescue StandardError
+      false
+    end
+
+    def face_entity?(entity)
+      defined?(Sketchup::Face) && entity.is_a?(Sketchup::Face)
+    rescue StandardError
+      false
+    end
+
+    def instance_entity?(entity)
+      (defined?(Sketchup::Group) && entity.is_a?(Sketchup::Group)) ||
+        (defined?(Sketchup::ComponentInstance) && entity.is_a?(Sketchup::ComponentInstance))
+    rescue StandardError
+      false
+    end
+
+    # Точки грани: внешний контур и отверстия.
+    def face_points(face)
+      points = []
+      loops = begin
+        face.loops
+      rescue StandardError
+        nil
+      end
+      if loops
+        loops.each do |loop|
+          begin
+            loop.vertices.each { |v| points << v.position }
+          rescue StandardError
+            nil
+          end
+        end
+      else
+        begin
+          face.vertices.each { |v| points << v.position }
         rescue StandardError
           nil
         end
-        next if bounds.nil? || bounds.empty?
-        if transform.nil?
-          box.add(bounds.min)
-          box.add(bounds.max)
-        else
-          bbox_corners(bounds).each { |pt| box.add(pt.transform(transform)) }
-        end
       end
-      box
+      points
+    end
+
+    def safe_bounds(entity)
+      entity.bounds
+    rescue StandardError
+      nil
     end
 
     # Служебные объекты, которые не рисуются в кадре (или рисуются как
@@ -152,21 +294,37 @@ module FacadeExport
       ConstructionLine ConstructionPoint SectionPlane Text Dimension
     ].freeze
 
+    # Классы-аннотации ищутся один раз, а не на каждый объект модели:
+    # габариты считаются по тысячам рёбер, и лишние const_get заметны.
+    def annotation_classes
+      @annotation_classes ||= ANNOTATION_CLASSES.map do |name|
+        Sketchup.const_get(name) if Sketchup.const_defined?(name, false)
+      end.compact
+    rescue StandardError
+      []
+    end
+
+    def annotation_class?(entity)
+      annotation_classes.any? { |klass| entity.is_a?(klass) }
+    end
+
+    # Видима ли сущность: не аннотация, не скрыта, её метка (тег) включена.
     def entity_visible?(entity)
-      ANNOTATION_CLASSES.each do |name|
-        klass = Sketchup.const_get(name) if Sketchup.const_defined?(name, false)
-        return false if klass && entity.is_a?(klass)
-      end
+      return false if annotation_class?(entity)
       return false if entity.respond_to?(:hidden?) && entity.hidden?
-      if entity.respond_to?(:layer)
-        layer = begin
-          entity.layer
+      layer = begin
+        entity.respond_to?(:layer) ? entity.layer : nil
+      rescue StandardError
+        nil
+      end
+      if layer
+        return false if layer.respond_to?(:visible?) && layer.visible? == false
+        folder = begin
+          layer.respond_to?(:folder) ? layer.folder : nil
         rescue StandardError
           nil
         end
-        if layer && layer.respond_to?(:visible?) && layer.visible? == false
-          return false
-        end
+        return false if folder && folder.respond_to?(:visible?) && folder.visible? == false
       end
       true
     end
@@ -396,23 +554,6 @@ module FacadeExport
       camera.perspective? == true
     rescue StandardError
       false
-    end
-
-    # Отношение сторон окна просмотра (ширина / высота).
-    # Используется только как справочное: размер кадра задают настройки.
-    def viewport_ratio(view)
-      w = begin
-        view.vpwidth.to_f
-      rescue StandardError
-        0.0
-      end
-      h = begin
-        view.vpheight.to_f
-      rescue StandardError
-        0.0
-      end
-      return nil if w <= 0.0 || h <= 0.0
-      w / h
     end
 
     # Высота кадра в единицах модели для текущей камеры.
