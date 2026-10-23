@@ -1,46 +1,64 @@
 # encoding: utf-8
-# Экспорт фасадов — временная перекраска прозрачных (стеклянных) материалов
-# в контрастный цвет и возврат исходных цветов.
+# Экспорт фасадов — работа с прозрачными (стеклянными) материалами.
 # Автор: Артем Титов (motivate_rt)
+#
+# Типы стекла определяются по непрозрачности материала:
+#   0–10 %   — стеклянные ограждения (на картах текстур/линий/теней исчезают);
+#   11–89 %  — основное стекло;
+#   90–99 %  — тонированное стекло;
+#   100 %    — обычный материал, не трогаем.
 
 module FacadeExport
   class GlassRecolor
-    # min_alpha / max_alpha — какие материалы считаем "непрозрачность ≠ 100 %".
-    def initialize(model, rgb, options = {})
+    # Режимы:
+    #   'combined'     — карта "Окна": все типы стекла в свои цвета, непрозрачность 100 %;
+    #   'main' / 'tinted' / 'railing' — отдельная карта одного типа:
+    #                    нужный тип окрашен, остальные типы стекла исчезают;
+    #   'hide_railings' — карты текстур/линий/теней: ограждения исчезают.
+    MODES = %w[combined main tinted railing hide_railings].freeze
+    TYPES = %w[main tinted railing].freeze
+
+    attr_reader :recolored, :hidden
+
+    def initialize(model, colors, options = {})
       @model = model
-      @rgb = rgb
-      @min_alpha = options.key?(:min_alpha) ? options[:min_alpha].to_f : 0.0
-      @max_alpha = options.key?(:max_alpha) ? options[:max_alpha].to_f : 0.999
+      @colors = colors || {}
+      @mode = options[:mode].to_s
+      @mode = 'combined' unless MODES.include?(@mode)
+      @railing_max = (options[:railing_max] || Config::GLASS_RAILING_MAX).to_f
+      @tinted_min  = (options[:tinted_min] || Config::GLASS_TINTED_MIN).to_f
+      @opaque_min  = (options[:opaque_min] || Config::GLASS_OPAQUE_MIN).to_f
       @saved = []
       @applied = false
       @recolored = 0
+      @hidden = 0
     end
 
-    attr_reader :recolored
+    def applied?
+      @applied
+    end
 
+    # Применяет режим к материалам модели. Возвращает число изменённых материалов.
     def apply
       return 0 if @applied
-      color = Sketchup::Color.new(@rgb[0], @rgb[1], @rgb[2])
       @model.materials.each do |mat|
         begin
           alpha = material_alpha(mat)
           next if alpha.nil?
-          next if alpha >= @max_alpha || alpha < @min_alpha
-
-          state = save_state(mat, alpha)
-          mat.texture = nil if state[:texture]
-          mat.color = color
-          mat.alpha = 1.0
-          @saved << state
-          @recolored += 1
+          type = classify(alpha * 100.0)
+          next if type.nil?
+          action = action_for(type)
+          next if action.nil?
+          change_material(mat, alpha, type, action)
         rescue StandardError => e
-          FacadeExport.log("Материал \"#{safe_name(mat)}\" не перекрашен: #{e.message}")
+          FacadeExport.log("Материал \"#{safe_name(mat)}\" не изменён: #{e.message}")
         end
       end
       @applied = true
-      @recolored
+      @recolored + @hidden
     end
 
+    # Возвращает исходные цвета, непрозрачность и текстуры.
     def restore
       return false unless @applied
       @saved.each do |state|
@@ -56,7 +74,8 @@ module FacadeExport
               nil
             end
           end
-          mat.color = Sketchup::Color.new(state[:color][0], state[:color][1], state[:color][2], state[:color][3])
+          c = state[:color]
+          mat.color = Sketchup::Color.new(c[0], c[1], c[2], c[3])
           mat.alpha = state[:alpha]
         rescue StandardError => e
           FacadeExport.log("Материал \"#{safe_name(mat)}\" не восстановлен: #{e.message}")
@@ -64,14 +83,50 @@ module FacadeExport
       end
       @saved.clear
       @applied = false
+      @recolored = 0
+      @hidden = 0
       true
     end
 
-    def applied?
-      @applied
+    # Тип стекла по непрозрачности в процентах (или nil для обычных материалов).
+    def classify(opacity_percent)
+      return 'railing' if opacity_percent <= @railing_max
+      return 'tinted' if opacity_percent >= @tinted_min && opacity_percent < @opaque_min
+      return 'main' if opacity_percent < @tinted_min
+      nil
     end
 
     private
+
+    # :color — перекрасить и сделать непрозрачным,
+    # :hide  — сделать полностью прозрачным,
+    # nil    — не трогать.
+    def action_for(type)
+      case @mode
+      when 'combined'
+        :color
+      when 'main', 'tinted', 'railing'
+        type == @mode ? :color : :hide
+      when 'hide_railings'
+        type == 'railing' ? :hide : nil
+      end
+    end
+
+    def change_material(mat, alpha, type, action)
+      state = save_state(mat, alpha)
+      case action
+      when :color
+        color = @colors[type] || @colors['main'] || [0, 255, 21]
+        mat.texture = nil if state[:texture]
+        mat.color = Sketchup::Color.new(color[0], color[1], color[2])
+        mat.alpha = 1.0
+        @recolored += 1
+      when :hide
+        mat.alpha = 0.0
+        @hidden += 1
+      end
+      @saved << state
+    end
 
     def safe_name(mat)
       mat.respond_to?(:name) ? mat.name : mat.to_s
@@ -81,9 +136,7 @@ module FacadeExport
       if mat.respond_to?(:use_alpha?) && mat.use_alpha? == false
         return 1.0
       end
-      if mat.respond_to?(:alpha)
-        return mat.alpha.to_f
-      end
+      return mat.alpha.to_f if mat.respond_to?(:alpha)
       c = mat.color
       c ? c.alpha.to_f / 255.0 : 1.0
     rescue StandardError

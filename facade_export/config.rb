@@ -6,12 +6,10 @@ require 'json'
 
 module FacadeExport
   # Все значения по умолчанию собраны в одном месте.
-  # Ключи соответствуют параметрам окна экспорта SketchUp
-  # (Файл > Экспорт > Двумерная графика) и настройкам стиля.
   module Config
-    PREF_SECTION   = 'FacadeExport'.freeze
-    PREF_KEY       = 'settings'.freeze
-    SETTINGS_VERSION = 1
+    PREF_SECTION = 'FacadeExport'.freeze
+    PREF_KEY     = 'settings'.freeze
+    SETTINGS_VERSION = 2
 
     # Значения "RenderMode" (SketchUp, "Правка > Грань"):
     # 0 — Каркас, 1 — Скрытые линии, 2 — Затенение, 5 — Монохромный.
@@ -37,129 +35,169 @@ module FacadeExport
       'standalone' => 2
     }.freeze
 
+    # Соотношения сторон кадра. Первое число — "ширина" кадра,
+    # для вертикальных объектов соотношение разворачивается.
+    ASPECTS = {
+      '4:3'  => [4, 3],
+      '3:2'  => [3, 2],
+      '16:9' => [16, 9],
+      '1:1'  => [1, 1],
+      '3:4'  => [3, 4],
+      '2:3'  => [2, 3],
+      '9:16' => [9, 16]
+    }.freeze
+
+    DEFAULT_ASPECT = '4:3'.freeze
+
+    # Пределы стороны изображения (ограничение SketchUp — 16000).
     MAX_IMAGE_SIDE = 16_000
     MIN_IMAGE_SIDE = 100
 
     # Фон всегда полностью белый: RGB 255,255,255.
     WHITE_RGB = [255, 255, 255].freeze
 
+    # Названия отдельных карт для типов стекла (п. 11).
+    GLASS_TITLES = {
+      'main'    => 'окно-стекло',
+      'tinted'  => 'окно-тонировка',
+      'railing' => 'окно-ограждения'
+    }.freeze
+
+    # Пороги непрозрачности материала, % (п. 11).
+    GLASS_RAILING_MAX = 10    # 0–10 %   — стеклянные ограждения
+    GLASS_TINTED_MIN  = 90    # 90–99 %  — тонированное стекло
+    GLASS_OPAQUE_MIN  = 99.5  # ≥ 99.5 % — не стекло, обычные материалы
+
+    def self.aspect_ratio(name)
+      ASPECTS[name.to_s] || ASPECTS[DEFAULT_ASPECT]
+    end
+
     # ---------------------------------------------------------------- defaults
+
+    def self.default_export
+      {
+        # Основные (видны сразу)
+        'width'           => 9999,      # длина большей стороны кадра
+        'height'          => 0,         # 0 = автоматически по соотношению
+        'line_scale'      => 0.3,       # множитель масштаба линии 0,3x
+        'margin'          => 0.02,      # зазор от края, доля большей стороны
+        'restore_view'    => true,      # возвращать вид и стиль после экспорта
+        'show_report'     => true,      # показывать отчёт
+
+        # Расширенные
+        'aspect'          => DEFAULT_ASPECT,
+        'projection'      => 'parallel', # параллельная проекция
+        'sun_for_shading' => false,      # "использовать солнце для затенения"
+        'use_view_size'   => false,
+        'antialias'       => false,
+        'transparent'     => true,
+        'background'      => '#FFFFFF',
+        'show_sky'        => false,
+        'show_ground'     => false,
+        'hide_guides'     => true,
+        'hide_annotations'=> true,
+        'hide_watermarks' => true,
+        # Активные сечения всегда продолжают резать геометрию (DisplaySectionCuts
+        # включается на время экспорта), а сами плоскости не рисуем.
+        'show_section_planes' => false,
+        'last_directory'  => ''
+      }
+    end
+
+    def self.default_glass
+      {
+        'main_h'    => 125, 'main_s'    => 100, 'main_l'    => 50,
+        'tinted_h'  => 180, 'tinted_s'  => 100, 'tinted_l'  => 50,
+        'railing_h' => 300, 'railing_s' => 100, 'railing_l' => 50
+      }
+    end
+
+    def self.default_maps
+      [
+        {
+          'key'        => 'texture',
+          'kind'       => 'standard',
+          'title'      => 'Текстура',
+          'enabled'    => true,
+          'render_mode'=> 'shaded',   # Затенение с текстурами
+          'edges'      => false,      # только текстуры, без линий
+          'shadows'    => false,
+          'textures'   => true,
+          'material_transparency' => false,
+          'shadow_azimuth'   => 45,
+          'shadow_elevation' => 45,
+          'shadow_light'     => 100,
+          'shadow_dark'      => 0
+        },
+        {
+          'key'        => 'lines',
+          'kind'       => 'standard',
+          'title'      => 'Линии',
+          'enabled'    => true,
+          'render_mode'=> 'hidden',   # Скрытые линии
+          'edges'      => true,       # только линии
+          'shadows'    => false,
+          'textures'   => false,
+          'material_transparency' => false,
+          'shadow_azimuth'   => 45,
+          'shadow_elevation' => 45,
+          'shadow_light'     => 100,
+          'shadow_dark'      => 0
+        },
+        {
+          'key'        => 'shadows',
+          'kind'       => 'standard',
+          'title'      => 'Тени',
+          'enabled'    => true,
+          'render_mode'=> 'hidden',   # белые грани — остаются только тени
+          'edges'      => false,
+          'shadows'    => true,
+          'textures'   => false,
+          'material_transparency' => false,
+          'shadow_azimuth'   => 45,   # солнце слева сверху под 45°
+          'shadow_elevation' => 45,
+          'shadow_light'     => 100,  # "Светлее"
+          'shadow_dark'      => 0     # "Темнее"
+        },
+        {
+          'key'        => 'windows',
+          'kind'       => 'windows',
+          'title'      => 'Окна',
+          'enabled'    => true,
+          'render_mode'=> 'shaded',   # "Отобразить в режиме теней" — без теней
+          'edges'      => false,
+          'shadows'    => false,
+          'textures'   => false,
+          'material_transparency' => false,
+          'split_windows' => false,   # разделять по типам стекла
+          'shadow_azimuth'   => 45,
+          'shadow_elevation' => 45,
+          'shadow_light'     => 100,
+          'shadow_dark'      => 0
+        }.merge(default_glass)
+      ]
+    end
 
     def self.default_settings
       {
         'version' => SETTINGS_VERSION,
-        'export'  => {
-          # Параметры экспорта PNG (по умолчанию — как в задании).
-          'use_view_size'  => false,   # "Не использовать размер вида"
-          'width'          => 9999,    # Ширина, пикс.
-          'height'         => 0,       # 0 = автоматически (по пропорциям вида)
-          'antialias'      => false,   # "Автоматическое сглаживание" — выключено
-          'transparent'    => true,    # "Прозрачный фон" — включён
-          'line_scale'     => 0.3,     # "Множитель масштаба линии" — 0,3x
-
-          # Компоновка кадра.
-          'margin'         => 0.04,    # отступ вокруг фасада, доля кадра
-          'perspective'    => false,   # "Параллельная проекция"
-
-          # Стиль на время экспорта.
-          'background'     => '#FFFFFF',
-          'show_sky'       => false,
-          'show_ground'    => false,
-          'hide_guides'    => true,    # скрыть направляющие
-          'hide_annotations' => true,  # скрыть оси, размеры, тексты
-          'hide_watermarks'=> true,
-          'disable_section_cuts' => true,
-
-          # Тени (лоток "Тени" по умолчанию).
-          'shadow_light'    => 100,    # "Светлее"
-          'shadow_dark'     => 0,      # "Темнее"
-          'sun_for_shading' => false,  # "Использовать солнце для затенения" — выкл.
-
-          # Поведение плагина.
-          'restore_view'   => true,    # вернуть вид и стиль после экспорта
-          'show_report'    => true,    # показать итоговое окно со списком файлов
-          'last_directory' => ''
-        },
-        'maps' => [
-          {
-            'key'                    => 'texture',
-            'title'                  => 'Текстура',
-            'enabled'                => true,
-            'render_mode'            => 'shaded',   # Затенение с текстурами
-            'textures'               => true,
-            'edges'                  => false,      # края скрыты — только текстуры
-            'shadows'                => false,
-            'material_transparency'  => false,      # прозрачность материала убрана
-            'sun_for_shading'        => false,
-            'shadow_light'           => 100,
-            'shadow_dark'            => 0,
-            'shadow_azimuth'         => 45,
-            'shadow_elevation'       => 45,
-            'highlight_transparent'  => false,
-            'glass_h'                => 125,
-            'glass_s'                => 100,
-            'glass_l'                => 50
-          },
-          {
-            'key'                    => 'lines',
-            'title'                  => 'Линии',
-            'enabled'                => true,
-            'render_mode'            => 'hidden',   # Скрытые линии
-            'textures'               => false,
-            'edges'                  => true,       # края показаны — только линии
-            'shadows'                => false,
-            'material_transparency'  => false,
-            'sun_for_shading'        => false,
-            'shadow_light'           => 100,
-            'shadow_dark'            => 0,
-            'shadow_azimuth'         => 45,
-            'shadow_elevation'       => 45,
-            'highlight_transparent'  => false,
-            'glass_h'                => 125,
-            'glass_s'                => 100,
-            'glass_l'                => 50
-          },
-          {
-            'key'                    => 'shadows',
-            'title'                  => 'Тени',
-            'enabled'                => true,
-            'render_mode'            => 'hidden',   # белые грани — только тени
-            'textures'               => false,
-            'edges'                  => false,      # края скрыты
-            'shadows'                => true,
-            'material_transparency'  => false,
-            'sun_for_shading'        => false,      # солнце для затенения — выкл.
-            'shadow_light'           => 100,        # "Светлее"
-            'shadow_dark'            => 0,          # "Темнее"
-            'shadow_azimuth'         => 45,         # солнце слева сверху, 45°
-            'shadow_elevation'       => 45,
-            'highlight_transparent'  => false,
-            'glass_h'                => 125,
-            'glass_s'                => 100,
-            'glass_l'                => 50
-          },
-          {
-            'key'                    => 'windows',
-            'title'                  => 'Окна',
-            'enabled'                => true,
-            'render_mode'            => 'shaded',   # "Отобразить в режиме теней"
-            'textures'               => false,
-            'edges'                  => false,
-            'shadows'                => false,      # тени отключены
-            'material_transparency'  => false,
-            'sun_for_shading'        => false,
-            'shadow_light'           => 100,
-            'shadow_dark'            => 0,
-            'shadow_azimuth'         => 45,
-            'shadow_elevation'       => 45,
-            # Перекраска материалов с непрозрачностью меньше 100 %
-            'highlight_transparent'  => true,
-            'glass_h'                => 125,
-            'glass_s'                => 100,
-            'glass_l'                => 50
-          }
-        ]
+        'export'  => default_export,
+        'maps'    => default_maps
       }
+    end
+
+    # Карта, создаваемая кнопкой "+" (п. 13).
+    def self.new_custom_map(index)
+      default_maps[0].merge(
+        'key'        => "custom_#{index}",
+        'kind'       => 'custom',
+        'title'      => "Своя карта #{index}",
+        'enabled'    => true,
+        'render_mode'=> 'shaded',
+        'edges'      => false,
+        'shadows'    => false,
+        'textures'   => true
+      ).merge(default_glass)
     end
 
     # ------------------------------------------------------------------ helpers
@@ -184,8 +222,7 @@ module FacadeExport
     attr_reader :data
 
     def initialize(hash = nil)
-      defaults = Config.default_settings
-      @data = Config.deep_merge(defaults, hash.is_a?(Hash) ? hash : {})
+      @data = Config.deep_merge(Config.default_settings, hash.is_a?(Hash) ? hash : {})
       normalize!
     end
 
@@ -224,8 +261,7 @@ module FacadeExport
     end
 
     def replace!(hash)
-      defaults = Config.default_settings
-      @data = Config.deep_merge(defaults, hash.is_a?(Hash) ? hash : {})
+      @data = Config.deep_merge(Config.default_settings, hash.is_a?(Hash) ? hash : {})
       normalize!
       self
     end
@@ -261,6 +297,10 @@ module FacadeExport
       export[key.to_s] = value
     end
 
+    def parallel_projection?
+      exp('projection').to_s != 'perspective'
+    end
+
     def truthy(value)
       value == true || value == 'true' || value == 1 || value == '1'
     end
@@ -271,31 +311,41 @@ module FacadeExport
       e['width']      = clamp_int(e['width'], Config::MIN_IMAGE_SIDE, Config::MAX_IMAGE_SIDE, 9999)
       e['height']     = clamp_int(e['height'], 0, Config::MAX_IMAGE_SIDE, 0)
       e['line_scale'] = clamp_float(e['line_scale'], 0.01, 10.0, 0.3)
-      e['margin']     = clamp_float(e['margin'], 0.0, 0.30, 0.04)
-      e['shadow_light'] = clamp_int(e['shadow_light'], 0, 100, 100)
-      e['shadow_dark']  = clamp_int(e['shadow_dark'], 0, 100, 0)
-      %w[use_view_size antialias transparent perspective show_sky show_ground
-         hide_guides hide_annotations hide_watermarks disable_section_cuts
-         sun_for_shading restore_view show_report].each do |key|
+      e['margin']     = clamp_float(e['margin'], 0.0, 0.25, 0.02)
+      e['aspect']     = Config::DEFAULT_ASPECT unless Config::ASPECTS.key?(e['aspect'].to_s)
+      e['projection'] = 'parallel' unless %w[parallel perspective].include?(e['projection'].to_s)
+
+      %w[restore_view show_report sun_for_shading use_view_size antialias
+         transparent show_sky show_ground hide_guides hide_annotations
+         hide_watermarks show_section_planes].each do |key|
         e[key] = truthy(e[key])
       end
       e['background'] = '#FFFFFF' if e['background'].to_s.strip.empty?
 
-      (maps || []).each do |m|
-        m['key'] = m['key'].to_s
+      list = maps
+      unless list.is_a?(Array) && !list.empty?
+        @data['maps'] = Config.default_maps
+        list = @data['maps']
+      end
+
+      seen = {}
+      list.each_with_index do |m, index|
+        m['kind'] = 'standard' unless %w[standard windows custom].include?(m['kind'].to_s)
+        m['key']  = m['key'].to_s.strip
+        m['key']  = "map_#{index}" if m['key'].empty? || seen[m['key']]
+        seen[m['key']] = true
         m['title'] = m['key'] if m['title'].to_s.strip.empty?
         m['render_mode'] = 'shaded' unless Config::RENDER_MODES.key?(m['render_mode'])
-        %w[enabled textures edges shadows material_transparency sun_for_shading
-           highlight_transparent].each do |key|
+        %w[enabled edges shadows textures material_transparency split_windows].each do |key|
           m[key] = truthy(m[key])
         end
         m['shadow_light']     = clamp_int(m['shadow_light'], 0, 100, 100)
         m['shadow_dark']      = clamp_int(m['shadow_dark'], 0, 100, 0)
         m['shadow_azimuth']   = clamp_float(m['shadow_azimuth'], 0.0, 90.0, 45.0)
         m['shadow_elevation'] = clamp_float(m['shadow_elevation'], 5.0, 89.0, 45.0)
-        m['glass_h'] = clamp_int(m['glass_h'], 0, 360, 125)
-        m['glass_s'] = clamp_int(m['glass_s'], 0, 100, 100)
-        m['glass_l'] = clamp_int(m['glass_l'], 0, 100, 50)
+        Config.default_glass.each do |key, value|
+          m[key] = clamp_int(m[key], 0, key.end_with?('_h') ? 360 : 100, value)
+        end
       end
     end
 

@@ -91,6 +91,10 @@ module Geom
       Geom::Point3d.new(@x + vec.x, @y + vec.y, @z + vec.z)
     end
 
+    def transform(transformation)
+      Geom::Point3d.new(@x + transformation.x, @y + transformation.y, @z + transformation.z)
+    end
+
     def inspect
       format('Point(%0.3f, %0.3f, %0.3f)', @x, @y, @z)
     end
@@ -101,19 +105,48 @@ module Geom
     end
   end
 
+  # Упрощённое преобразование: только перенос (для проверки контекста).
+  class Transformation
+    attr_reader :x, :y, :z
+
+    def initialize(x = 0.0, y = 0.0, z = 0.0)
+      @x = x.to_f
+      @y = y.to_f
+      @z = z.to_f
+    end
+
+    def *(other)
+      Geom::Transformation.new(@x + other.x, @y + other.y, @z + other.z)
+    end
+
+    def inspect
+      format('Transformation(%0.3f, %0.3f, %0.3f)', @x, @y, @z)
+    end
+  end
+
   class BoundingBox
     attr_reader :min, :max
 
-    def initialize(points)
-      xs = points.map(&:x)
-      ys = points.map(&:y)
-      zs = points.map(&:z)
-      @min = Geom::Point3d.new(xs.min, ys.min, zs.min)
-      @max = Geom::Point3d.new(xs.max, ys.max, zs.max)
+    def initialize(points = nil)
+      @min = nil
+      @max = nil
+      Array(points).each { |pt| add(pt) }
+    end
+
+    # Как в SketchUp: bbox.add(point)
+    def add(point)
+      if @min.nil?
+        @min = Geom::Point3d.new(point.x, point.y, point.z)
+        @max = Geom::Point3d.new(point.x, point.y, point.z)
+      else
+        @min = Geom::Point3d.new([@min.x, point.x].min, [@min.y, point.y].min, [@min.z, point.z].min)
+        @max = Geom::Point3d.new([@max.x, point.x].max, [@max.y, point.y].max, [@max.z, point.z].max)
+      end
+      self
     end
 
     def empty?
-      false
+      @min.nil?
     end
 
     def center
@@ -136,6 +169,80 @@ module Geom
 
     def height
       @max.z - @min.z
+    end
+  end
+end
+
+
+module Sketchup
+  # Простейшие сущности модели (для проверки экспорта из открытой группы).
+  class Entity
+    attr_accessor :hidden, :bounds
+
+    def initialize
+      @hidden = false
+    end
+
+    def hidden?
+      @hidden
+    end
+
+    def valid?
+      true
+    end
+  end
+
+  class Entities
+    include Enumerable
+
+    def initialize(list = [])
+      @list = list
+    end
+
+    def each(&block)
+      @list.each(&block)
+    end
+
+    def to_a
+      @list.dup
+    end
+
+    def add(entity)
+      @list << entity
+      self
+    end
+
+    def length
+      @list.length
+    end
+  end
+
+  class Definition
+    attr_accessor :bounds, :entities
+
+    def initialize(bounds, entities = nil)
+      @bounds = bounds
+      @entities = entities || Sketchup::Entities.new
+    end
+  end
+
+  class ConstructionLine < Sketchup::Entity; end
+
+  class ConstructionPoint < Sketchup::Entity; end
+
+  class Text < Sketchup::Entity; end
+
+  class Dimension < Sketchup::Entity; end
+
+  class SectionPlane < Sketchup::Entity; end
+
+  class GroupInstance < Sketchup::Entity
+    attr_accessor :definition, :transformation
+
+    def initialize(definition, transformation = Geom::Transformation.new)
+      super()
+      @definition = definition
+      @transformation = transformation
     end
   end
 end
@@ -410,7 +517,8 @@ module Sketchup
         :shadow => @model.shadow_info.to_h,
         :camera => @camera,
         :materials => @model.materials.map { |m| [m.name, m.color.to_a, m.alpha] },
-        :selection => @model.selection.length
+        :selection => @model.selection.length,
+        :hidden => @model.entities.map { |e| e.hidden? }
       }
       true
     end
@@ -462,6 +570,9 @@ module Sketchup
     def initialize
       @title = 'Заречная'
       @path = '/models/Заречная.skp'
+      @active_path = []
+      @entities = Sketchup::Entities.new
+      @started_operations = []
       @rendering_options = Sketchup::RenderingOptions.new(
         {
           'BackgroundColor' => Sketchup::Color.new(240, 240, 240),
@@ -531,6 +642,7 @@ module Sketchup
           Sketchup::Material.new('Кирпич', Sketchup::Color.new(180, 90, 70)),
           Sketchup::Material.new('Стекло', Sketchup::Color.new(200, 230, 240), 0.35),
           Sketchup::Material.new('Рама', Sketchup::Color.new(60, 60, 60), 1.0),
+          Sketchup::Material.new('Тонировка', Sketchup::Color.new(120, 140, 170), 0.95),
           Sketchup::Material.new(
             'Витрина', Sketchup::Color.new(150, 200, 220), 0.0,
             begin
@@ -545,6 +657,21 @@ module Sketchup
       )
       @selection = Sketchup::Selection.new
       @view = Sketchup::View.new(self)
+    end
+
+    attr_accessor :active_path, :entities
+
+    def start_operation(_name = nil, _disable_ui = false)
+      @started_operations << _name
+      true
+    end
+
+    def commit_operation
+      true
+    end
+
+    def abort_operation
+      true
     end
 
     def selection

@@ -16,7 +16,7 @@ require_relative 'dialogs'
 
 module FacadeExport
   PLUGIN_NAME = 'Экспорт фасадов'
-  VERSION     = '1.0.0'
+  VERSION     = '1.1.0'
   AUTHOR      = 'Артем Титов motivate_rt'
   PATH = File.expand_path(File.dirname(__FILE__)) unless defined?(PATH) && PATH
 
@@ -53,10 +53,11 @@ module FacadeExport
       end
       view = model.active_view
 
-      # Вид проверяем до того, как спрашивать папку.
+      # Вид и содержимое проверяем до того, как спрашивать папку.
       begin
         Framing.facade_directions(view.camera, 1)
-        Framing.bbox_corners(model.bounds)
+        bounds, _scope = Framing.content_bounds(model)
+        Framing.bbox_corners(bounds)
       rescue ExportError => e
         UI.messagebox(e.message)
         return
@@ -68,8 +69,9 @@ module FacadeExport
         return
       end
 
+      # Имя в окне сохранения — префикс имён файлов (п. 10 задания).
       base_name = model_base_name(model)
-      destination = Dialogs.ask_destination(settings, base_name, maps.first['title'])
+      destination = Dialogs.ask_destination(settings, base_name)
       return if destination.nil?
 
       settings.set_export('last_directory', destination[:directory])

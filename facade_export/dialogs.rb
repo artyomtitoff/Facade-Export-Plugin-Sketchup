@@ -11,13 +11,14 @@ module FacadeExport
     # ---------------------------------------------------------- выбор папки
 
     # Спрашивает у пользователя путь один раз (как штатный экспорт SketchUp).
+    # Имя в поле "Имя файла" — это префикс будущих файлов: пользователь может
+    # вписать своё название, и оно попадёт в имена всех PNG.
     # Возвращает {:directory => "...", :base_name => "..."} или nil.
-    def ask_destination(settings, suggested_base, first_map_title)
+    def ask_destination(settings, suggested_base)
       last = settings.exp('last_directory').to_s
       last = default_directory if last.empty? || !safe_directory?(last)
 
-      suggestion = "#{Util.sanitize_filename(suggested_base, 'Модель')}_Фасад_1_" \
-                   "#{Util.sanitize_filename(first_map_title, 'Текстура')}.png"
+      suggestion = "#{Util.sanitize_filename(suggested_base, 'Модель')}.png"
       path = begin
         UI.savepanel('Экспорт фасадов — выберите папку для сохранения', last, suggestion)
       rescue StandardError => e
@@ -27,10 +28,12 @@ module FacadeExport
       return nil if path.nil? || path.to_s.strip.empty?
 
       directory = File.dirname(path.to_s)
-      typed = File.basename(path.to_s, '.*')
-      base = suggested_base.to_s.strip
-      base = typed if base.empty? && !typed.to_s.empty?
-      base = 'Модель' if base.to_s.strip.empty?
+      typed = File.basename(path.to_s, '.*').strip
+      base = if typed.empty?
+               Util.sanitize_filename(suggested_base, 'Модель')
+             else
+               Util.sanitize_filename(typed, 'Модель')
+             end
       { :directory => directory, :base_name => base }
     end
 
@@ -180,6 +183,11 @@ module FacadeExport
         '',
         'Тени под 45° слева сверху — по принципу плагина',
         'Elevation 45 Shadows (TIG, 2006–2014).',
+        '',
+        'Стекло делится на три типа по непрозрачности материала:',
+        '0–10 % — ограждения, 11–89 % — основное, 90–99 % — тонировка.',
+        'В настройках карты «Окна» можно включить раздельные карты',
+        'по типам стекла: «окно-стекло», «окно-тонировка», «окно-ограждения».',
         '',
         'Кнопки: "Экспорт всех фасадов" и "Экспорт фасада".',
         'Перед нажатием выровняйте вид перпендикулярно фасаду.',

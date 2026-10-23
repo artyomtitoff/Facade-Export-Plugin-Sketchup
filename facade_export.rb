@@ -15,12 +15,13 @@ module FacadeExport
     MAIN = File.join(__dir__, 'facade_export', 'main.rb')
 
     extension = SketchupExtension.new('Экспорт фасадов', MAIN)
-    extension.version     = '1.0.0'
+    extension.version     = '1.1.0'
     extension.creator     = 'Артем Титов motivate_rt'
     extension.copyright   = '© 2026 Артем Титов (motivate_rt)'
     extension.description = 'Автоматический экспорт фасадов в PNG: 4 фасада × 4 карты ' \
-                            '(Текстура, Линии, Тени, Окна). Настройка стиля, единый ' \
-                            'масштаб, тени 45° слева сверху, перекраска стекла.'
+                            '(Текстура, Линии, Тени, Окна). Кадр 4:3 с большой стороной ' \
+                            '9999 px, единый масштаб, тени 45° слева сверху, три типа ' \
+                            'стекла, свои карты.'
     Sketchup.register_extension(extension, true)
     file_loaded(__FILE__)
   end

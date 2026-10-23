@@ -2,12 +2,15 @@
 # -*- coding: utf-8 -*-
 """Генератор иконок плагина "Экспорт фасадов".
 
+Стиль взят с иконок пользователя (icon1.png / icon2.png):
+
+  * открытая изометрическая коробка (макет дома) с белым полом внутри;
+  * «Экспорт всех фасадов» — все четыре стены розовые #FFD1D1;
+  * «Экспорт фасада»      — только передняя левая стена сиреневая #D7D9FF;
+  * контур — #3C3C3C.
+
 Иконки рисуются в 8-кратном разрешении и уменьшаются с LANCZOS —
 так получаются аккуратные края и чистая альфа на 24/32 px.
-
-«Экспорт всех фасадов» — сетка 2×2 из четырёх листов-фасадов,
-«Экспорт фасада»      — один лист с домом,
-у обеих кнопок снизу справа — зелёная стрелка экспорта.
 
 Запуск:  python3 tools/make_icons.py
 """
@@ -26,102 +29,103 @@ ROOT = os.path.dirname(HERE)
 OUT_DIR = os.path.join(ROOT, "facade_export", "icons")
 DOCS_DIR = os.path.join(ROOT, "docs")
 
-INK      = (37, 52, 78, 255)
-INK_SOFT = (150, 166, 190, 255)
-PAPER    = (255, 255, 255, 255)
-ACCENT   = (16, 154, 88, 255)
-BLUE     = (31, 111, 235, 255)
+INK   = (60, 60, 60, 255)     # #3C3C3C
+PINK  = (255, 209, 209, 255)  # #FFD1D1
+LILAC = (215, 217, 255, 255)  # #D7D9FF
+WHITE = (255, 255, 255, 255)
+
+OUTLINE = 12
+
+# Геометрия коробки (логические координаты 256×256).
+TOP_T = (128, 28)
+TOP_R = (218, 80)
+TOP_B = (128, 132)
+TOP_L = (38, 80)
+WALL = 84
+
+BOT_R = (TOP_R[0], TOP_R[1] + WALL)
+BOT_B = (TOP_B[0], TOP_B[1] + WALL)
+BOT_L = (TOP_L[0], TOP_L[1] + WALL)
+
+# Внутренний ромб — пол коробки.
+FLOOR = 0.78
+FLOOR_T = (128, 80 - (80 - TOP_T[1]) * FLOOR)
+FLOOR_R = (128 + (TOP_R[0] - 128) * FLOOR, 80)
+FLOOR_B = (128, 80 + (TOP_B[1] - 80) * FLOOR)
+FLOOR_L = (128 - (128 - TOP_L[0]) * FLOOR, 80)
 
 
 def s(v):
     return int(round(v * SS))
 
 
-def rounded(draw, box, radius, fill, outline=None, width=0):
-    draw.rounded_rectangle(
-        [s(box[0]), s(box[1]), s(box[2]), s(box[3])],
-        radius=s(radius), fill=fill, outline=outline, width=s(width))
-
-
-def line(draw, pts, color, width):
-    draw.line([(s(x), s(y)) for x, y in pts], fill=color, width=s(width), joint="curve")
+def p(pt):
+    return (s(pt[0]), s(pt[1]))
 
 
 def poly(draw, pts, fill, outline=None, width=0):
-    draw.polygon([(s(x), s(y)) for x, y in pts], fill=fill, outline=outline,
-                 width=s(width) if width else 0)
+    pts = [p(pt) for pt in pts]
+    if outline and width:
+        draw.polygon(pts, fill=fill)
+        draw.line(pts + [pts[0]], fill=outline, width=s(width), joint="curve")
+    else:
+        draw.polygon(pts, fill=fill)
 
 
-def scale_poly(pts, cx, cy, k):
-    return [(cx + (x - cx) * k, cy + (y - cy) * k) for x, y in pts]
+def line(draw, pts, color, width):
+    draw.line([p(pt) for pt in pts], fill=color, width=s(width), joint="curve")
 
 
-def arrow(draw, cx, top, neck, tip, stem_w, head_w,
-          color=ACCENT, outline=INK, outline_w=7):
-    """Стрелка вниз единым контуром (без разрыва между древком и остриём)."""
-    hs = stem_w / 2.0
-    hh = head_w / 2.0
-    pts = [(cx - hs, top), (cx + hs, top), (cx + hs, neck), (cx + hh, neck),
-           (cx, tip), (cx - hh, neck), (cx - hs, neck)]
-    cy = (top + tip) / 2.0
-    # белый "зазор" вокруг стрелки
-    halo = scale_poly(pts, cx, cy, 1.0 + (2.0 * (outline_w + 4)) / max(tip - top, 1))
-    poly(draw, halo, PAPER)
-    poly(draw, pts, color, outline, outline_w)
+def box(body, left_face=None, floor=WHITE):
+    """Открытая коробка: стены body, левая стена left_face (если задана)."""
+    img = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
 
+    # 1. Внешний силуэт коробки.
+    silhouette = [TOP_T, TOP_R, BOT_R, BOT_B, BOT_L, TOP_L]
+    poly(d, silhouette, body, INK, OUTLINE)
 
-def house(draw, x0, y0, x1, y1, color=INK, w=8, roof=0.36):
-    """Силуэт фасада дома внутри прямоугольника."""
-    dx = x1 - x0
-    dy = y1 - y0
-    roof_h = dy * roof
-    line(draw, [(x0, y1), (x0, y0 + roof_h)], color, w)
-    line(draw, [(x1, y1), (x1, y0 + roof_h)], color, w)
-    line(draw, [(x0, y0 + roof_h), ((x0 + x1) / 2.0, y0)], color, w)
-    line(draw, [((x0 + x1) / 2.0, y0), (x1, y0 + roof_h)], color, w)
-    line(draw, [(x0 - dx * 0.05, y1), (x1 + dx * 0.05, y1)], color, w)
-    # окна
-    wy0 = y0 + roof_h + dy * 0.18
-    wy1 = wy0 + dy * 0.22
-    rounded(draw, (x0 + dx * 0.14, wy0, x0 + dx * 0.40, wy1), 2, color)
-    rounded(draw, (x1 - dx * 0.40, wy0, x1 - dx * 0.14, wy1), 2, color)
+    # 2. Левая (передняя левая) стена — другой цвет.
+    if left_face:
+        wall = [TOP_L, TOP_B, BOT_B, BOT_L]
+        poly(d, wall, left_face)
+        # верхняя кромка этой стены (часть обода)
+        rim = [TOP_L, TOP_B, FLOOR_B, FLOOR_L]
+        poly(d, rim, left_face)
+
+    # 3. Внутренний обод: верхняя плоскость стен вокруг проёма.
+    rim_outer = [TOP_T, TOP_R, TOP_B, TOP_L]
+    line(d, rim_outer + [TOP_T], INK, OUTLINE)
+
+    # 4. Пол внутри коробки.
+    floor_pts = [FLOOR_T, FLOOR_R, FLOOR_B, FLOOR_L]
+    poly(d, floor_pts, floor, INK, OUTLINE)
+
+    # 5. Переднее вертикальное ребро коробки.
+    line(d, [TOP_B, BOT_B], INK, OUTLINE)
+
+    return img
 
 
 def icon_export_all():
-    """Четыре листа-фасада (2×2) + стрелка экспорта."""
-    img = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    cells = [(2, 4, 88, 86), (94, 4, 180, 86),
-             (2, 92, 88, 174), (94, 92, 180, 174)]
-    for (x0, y0, x1, y1) in cells:
-        # тень-подложка для объёма
-        rounded(d, (x0 + 5, y0 + 6, x1 + 5, y1 + 6), 10, (0, 0, 0, 26))
-        rounded(d, (x0, y0, x1, y1), 10, PAPER, INK, 7)
-        house(d, x0 + 14, y0 + 14, x1 - 14, y1 - 13, INK, 5)
-    arrow(d, cx=210, top=96, neck=170, tip=250, stem_w=34, head_w=84)
-    return img
+    """Все четыре стены розовые — экспорт всех фасадов."""
+    return box(PINK)
 
 
 def icon_export_one():
-    """Один лист с фасадом + стрелка экспорта."""
-    img = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    rounded(d, (18, 26, 236, 216), 18, (0, 0, 0, 26))
-    rounded(d, (12, 18, 228, 206), 18, PAPER, INK, 9)
-    house(d, 46, 52, 196, 176, INK, 8)
-    arrow(d, cx=196, top=150, neck=178, tip=250, stem_w=34, head_w=88)
-    return img
+    """Только передняя левая стена сиреневая — экспорт одного фасада."""
+    return box(WHITE, left_face=LILAC)
 
 
 def icon_settings():
-    """Шестерёнка."""
+    """Заглушка шестерёнки в той же палитре (пользователь заменит своей)."""
     img = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    cx, cy = 128, 126
-    r_disc, r_tooth, r_hole, r_ring = 80, 116, 32, 54
+    cx, cy = 128, 128
+    r_disc, r_tooth, r_hole, r_ring = 78, 114, 30, 52
     for i in range(8):
         ang = math.pi / 4.0 * i
-        half_w = 27
+        half_w = 26
         pts = []
         for rr, off in ((r_disc - 8, -half_w), (r_tooth, -half_w * 0.72),
                         (r_tooth, half_w * 0.72), (r_disc - 8, half_w)):
@@ -129,10 +133,10 @@ def icon_settings():
                         cy + rr * math.sin(ang) + off * math.cos(ang)))
         poly(d, pts, INK)
     d.ellipse([s(cx - r_disc), s(cy - r_disc), s(cx + r_disc), s(cy + r_disc)], fill=INK)
-    d.ellipse([s(cx - r_ring), s(cy - r_ring), s(cx + r_ring), s(cy + r_ring)], fill=PAPER)
-    d.ellipse([s(cx - r_ring + 18), s(cy - r_ring + 18),
-               s(cx + r_ring - 18), s(cy + r_ring - 18)], fill=INK)
-    d.ellipse([s(cx - r_hole), s(cy - r_hole), s(cx + r_hole), s(cy + r_hole)], fill=PAPER)
+    d.ellipse([s(cx - r_ring), s(cy - r_ring), s(cx + r_ring), s(cy + r_ring)], fill=WHITE)
+    d.ellipse([s(cx - r_ring + 17), s(cy - r_ring + 17),
+               s(cx + r_ring - 17), s(cy + r_ring - 17)], fill=INK)
+    d.ellipse([s(cx - r_hole), s(cy - r_hole), s(cx + r_hole), s(cy + r_hole)], fill=WHITE)
     return img
 
 
@@ -148,7 +152,7 @@ def make_preview(icons):
     width = pad + col_w * len(icons)
     sheet = Image.new("RGBA", (width, 400), (246, 247, 249, 255))
     x = pad
-    for key, img in icons:
+    for _key, img in icons:
         sheet.alpha_composite(img.resize((24, 24), Image.LANCZOS), (x, 26))
         sheet.alpha_composite(img.resize((32, 32), Image.LANCZOS), (x + 44, 22))
         sheet.alpha_composite(img.resize((160, 160), Image.LANCZOS), (x, 96))
