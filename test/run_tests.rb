@@ -462,8 +462,8 @@ user_camera = view.camera
 plan_vis, cams_vis = FacadeExport::Framing.visible_cameras(
   user_camera, view, FacadeExport.settings.export, 4, true
 )
-check('Кадр по соотношению окна просмотра: 9999×5624',
-      plan_vis[:image_width] == 9999 && plan_vis[:image_height] == 5624,
+check('Кадр по соотношению ИЗ НАСТРОЕК, а не окна: 9999×7499 (4:3)',
+      plan_vis[:image_width] == 9999 && plan_vis[:image_height] == 7499,
       [plan_vis[:image_width], plan_vis[:image_height]].inspect)
 # Пользователь смотрел в перспективе — переводим в параллельную проекцию
 # с эквивалентной высотой кадра на расстоянии до цели.
@@ -498,17 +498,35 @@ plan_par, cams_par = FacadeExport::Framing.visible_cameras(
 check_close('Параллельная камера пользователя: высота кадра без изменений',
             cams_par[0].height, 2500.0, 1e-6)
 
-# Вертикальное окно просмотра
+# Форма окна просмотра на размер кадра не влияет
 view.vpwidth = 1080.0
 view.vpheight = 1920.0
 plan_portrait, = FacadeExport::Framing.visible_cameras(
   view.camera, view, FacadeExport.settings.export, 1, true
 )
-check('Вертикальное окно: 5624×9999',
-      plan_portrait[:image_width] == 5624 && plan_portrait[:image_height] == 9999,
+check('Вертикальное окно просмотра: размер всё равно 9999×7499',
+      plan_portrait[:image_width] == 9999 && plan_portrait[:image_height] == 7499,
       [plan_portrait[:image_width], plan_portrait[:image_height]].inspect)
 view.vpwidth = 1920.0
 view.vpheight = 1080.0
+
+# Соотношение из настроек действует и в режиме «что на экране»
+settings_vis_aspect = FacadeExport::Settings.new
+settings_vis_aspect.set_export('visible_area', true)
+settings_vis_aspect.set_export('aspect', '3:1')
+plan_vis_31, = FacadeExport::Framing.visible_cameras(
+  view.camera, view, settings_vis_aspect.export, 1, true
+)
+check('Видимый режим: 3:1 из настроек -> 9999×3333',
+      plan_vis_31[:image_width] == 9999 && plan_vis_31[:image_height] == 3333,
+      [plan_vis_31[:image_width], plan_vis_31[:image_height]].inspect)
+settings_vis_aspect.set_export('aspect', '1:1')
+plan_vis_11, = FacadeExport::Framing.visible_cameras(
+  view.camera, view, settings_vis_aspect.export, 1, true
+)
+check('Видимый режим: 1:1 из настроек -> 9999×9999',
+      plan_vis_11[:image_width] == 9999 && plan_vis_11[:image_height] == 9999,
+      [plan_vis_11[:image_width], plan_vis_11[:image_height]].inspect)
 
 # Полный экспорт в этом режиме
 clean_out
@@ -526,8 +544,8 @@ result = FacadeExport::Exporter.new(
 check('Видимый режим: 16 файлов', result.files.length == 16, result.files.length)
 check('Видимый режим: ошибок нет', result.errors.empty?, result.errors.inspect)
 check('Видимый режим: пометка в результате', result.scope == :visible, result.scope)
-check('Видимый режим: размеры как у окна (9999×5624)',
-      view.writes.all? { |w| w[:width] == 9999 && w[:height] == 5624 },
+check('Видимый режим: размеры из настроек (9999×7499)',
+      view.writes.all? { |w| w[:width] == 9999 && w[:height] == 7499 },
       view.writes.map { |w| [w[:width], w[:height]] }.uniq.inspect)
 check('Видимый режим: камера пользователя не сдвинута',
       view.writes.first[:camera].eye.to_a == before_eye,
@@ -535,6 +553,89 @@ check('Видимый режим: камера пользователя не с�
 check('Видимый режим: камера восстановлена', view.camera.eye.to_a == before_eye)
 check('Видимый режим: стиль всё равно настроен',
       view.writes.all? { |w| w[:rendering]['DrawSky'] == false })
+
+# Перспективный вид пользователя: сначала переключение в параллельную проекцию
+clean_out
+model = new_model
+view = model.active_view
+persp = Sketchup::Camera.new(Geom::Point3d.new(1000, -8000, 2500),
+                             Geom::Point3d.new(600, 400, 300),
+                             Geom::Vector3d.new(0, 0, 1))
+persp.perspective = true
+persp.fov = 40.0
+view.camera = persp
+check('Пользователь смотрит в перспективе', view.camera.perspective? == true)
+expected_persp_height = 2.0 * (persp.eye - persp.target).length *
+                        Math.tan(persp.fov / 2.0 * Math::PI / 180.0)
+exporter_probe = FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Проба', :facade_count => 1
+)
+check('До экспорта вид перспективный', view.camera.perspective? == true)
+exporter_probe.send(:switch_to_parallel_view)
+check('switch_to_parallel_view переключает сам вид', view.camera.perspective? == false)
+check('switch_to_parallel_view сохраняет ракурс',
+      view.camera.eye.to_a == persp.eye.to_a && view.camera.target.to_a == persp.target.to_a)
+view.camera = persp
+
+converted = FacadeExport::Framing.parallel_camera(persp)
+check('Функция переводит камеру в параллельную проекцию', converted.perspective? == false)
+check('Точка взгляда и цель сохраняются',
+      converted.eye.to_a == persp.eye.to_a && converted.target.to_a == persp.target.to_a,
+      [converted.eye.to_a, converted.target.to_a].inspect)
+check_close('Высота кадра эквивалентна перспективе',
+            converted.height, expected_persp_height, 1e-6)
+check('Исходная камера не изменена', persp.perspective? == true)
+
+fresh_settings
+before_eye = persp.eye.to_a
+before_target = persp.target.to_a
+result = FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Перспектива', :facade_count => 4
+).run
+check('Перспектива: экспорт выполнен', result.errors.empty?, result.errors.inspect)
+check('Перспектива: 16 файлов', result.files.length == 16, result.files.length)
+check('Перспектива: все кадры параллельные',
+      view.writes.all? { |w| w[:camera].perspective? == false })
+check('Перспектива: вид переключён ДО первого кадра (высота у всех одинаковая)',
+      view.writes.map { |w| w[:camera].height.round(6) }.uniq.length == 1,
+      view.writes.map { |w| w[:camera].height }.uniq.inspect)
+check('Перспектива: камера пользователя восстановлена',
+      view.camera.perspective? == true &&
+      view.camera.eye.to_a == before_eye && view.camera.target.to_a == before_target,
+      [view.camera.perspective?, view.camera.eye.to_a].inspect)
+
+# То же в режиме «только видимый участок»
+clean_out
+model = new_model
+view = model.active_view
+persp2 = Sketchup::Camera.new(Geom::Point3d.new(0, -6000, 1500),
+                              Geom::Point3d.new(0, 0, 500), Geom::Vector3d.new(0, 0, 1))
+persp2.perspective = true
+persp2.fov = 45.0
+view.camera = persp2
+fresh_settings
+FacadeExport.settings.set_export('visible_area', true)
+before_eye2 = view.camera.eye.to_a
+result = FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Экран2', :facade_count => 2
+).run
+check('Видимый режим из перспективы: экспорт выполнен', result.errors.empty?, result.errors.inspect)
+check('Видимый режим из перспективы: кадры параллельные',
+      view.writes.all? { |w| w[:camera].perspective? == false })
+check('Видимый режим из перспективы: ракурс и цель пользователя сохранены',
+      view.writes.first[:camera].eye.to_a == before_eye2 &&
+      view.writes.first[:camera].target.to_a == persp2.target.to_a,
+      [view.writes.first[:camera].eye.to_a, before_eye2].inspect)
+expected_vis_height = 2.0 * (persp2.eye - persp2.target).length *
+                      Math.tan(persp2.fov / 2.0 * Math::PI / 180.0)
+check('Видимый режим из перспективы: высота кадра равна перспективной',
+      view.writes.all? { |w| (w[:camera].height - expected_vis_height).abs < 1e-6 },
+      view.writes.map { |w| w[:camera].height }.uniq.inspect)
+check('Видимый режим из перспективы: камера пользователя восстановлена',
+      view.camera.perspective? == true && view.camera.eye.to_a == before_eye2)
 
 # Явная высота перекрывает соотношение окна
 clean_out

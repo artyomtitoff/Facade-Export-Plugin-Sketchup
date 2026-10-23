@@ -147,6 +147,11 @@ const vaHint = byPath("export.visible_area").closest(".check").textContent;
 check("Подсказка объясняет, что попадёт в PNG",
   vaHint.includes("ровно то, что видно") && vaHint.includes("повёрнутой на 90°"),
   vaHint.slice(0, 160));
+check("Подсказка: размеры и соотношение — из настроек, а не из окна",
+  vaHint.includes("из настроек") && vaHint.includes("а не из окна просмотра"),
+  vaHint.slice(0, 200));
+check("Подсказка: перспектива переводится в параллельную проекцию",
+  vaHint.includes("параллельную проекцию"), vaHint.slice(0, 240));
 
 /* ------------------------------------------------ вкладка карты */
 

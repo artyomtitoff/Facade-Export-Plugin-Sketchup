@@ -126,6 +126,11 @@ module FacadeExport
 
         parallel = @settings.parallel_projection?
         visible = @settings.exp('visible_area') ? true : false
+        # Если пользователь смотрит в перспективе, сначала переводим сам вид
+        # в параллельную проекцию, и только потом считаем кадры и снимаем
+        # фасады. Иначе зум/высота кадра считались бы по перспективе и
+        # картинки разъезжались бы между фасадами.
+        switch_to_parallel_view if parallel
         directions, cameras, plan, scope = build_cameras(parallel, visible)
 
         @result.scope = scope
@@ -164,6 +169,21 @@ module FacadeExport
     # --------------------------------------------------------------- private
 
     private
+
+    # Переводит текущий вид в параллельную проекцию (если он перспективный),
+    # сохраняя точку взгляда, цель и примерную композицию.
+    # Исходная камера пользователя всё равно вернётся в ensure (SceneState).
+    def switch_to_parallel_view
+      camera = @view.camera
+      return false unless camera
+      return false unless Framing.perspective?(camera)
+      @view.camera = Framing.parallel_camera(camera)
+      invalidate_view
+      true
+    rescue StandardError => e
+      FacadeExport.log("Не удалось переключить вид в параллельную проекцию: #{e.message}")
+      false
+    end
 
     # Строит направления, камеры и размер кадра.
     #   * обычный режим — кадр по габаритам объекта (Framing.plan);
