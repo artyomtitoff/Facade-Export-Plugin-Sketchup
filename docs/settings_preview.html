@@ -21,8 +21,15 @@
     background: var(--bg); color: var(--text);
     font: 13px/1.45 -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
   }
-  body { display: flex; flex-direction: column; }
+  /* Окно целиком: шапка и подвал фиксированы, прокручивается только середина.
+     Поэтому нижняя панель не «прыгает» и не ужимается при раскрытии
+     расширенных настроек. */
+  body {
+    display: flex; flex-direction: column;
+    height: 100vh; min-height: 100vh; overflow: hidden;
+  }
   header {
+    flex: 0 0 auto;
     padding: 12px 18px 0 18px;
     background: var(--panel);
     border-bottom: 1px solid var(--line);
@@ -57,7 +64,13 @@
     border: 1px solid var(--line);
     border-bottom: none;
   }
-  main { flex: 1 1 auto; overflow: auto; padding: 16px 18px 24px 18px; }
+  main {
+    flex: 1 1 auto;
+    min-height: 0;          /* иначе флекс-элемент не даёт себя прокрутить */
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 16px 18px 24px 18px;
+  }
   section.tab { display: none; }
   section.tab.active { display: block; }
   .card {
@@ -68,17 +81,23 @@
     margin-bottom: 14px;
   }
   .card h2 {
-    margin: 0 0 10px 0;
+    margin: 0 0 12px 0;
     font-size: 12px;
     text-transform: uppercase;
     letter-spacing: .04em;
     color: var(--muted);
     font-weight: 600;
   }
-  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 22px; }
+  /* Два столбца: увеличенный зазор, чтобы рамки полей не соприкасались. */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 44px;
+    row-gap: 14px;
+  }
   .grid.one { grid-template-columns: minmax(0, 1fr); }
-  .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .field { display: flex; flex-direction: column; gap: 4px; }
+  .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 26px; }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .field label { font-size: 12px; color: #3b4149; }
   .field input[type="number"], .field input[type="text"], .field select {
     padding: 6px 8px;
@@ -92,8 +111,8 @@
   .field input:focus, .field select:focus {
     outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(31,111,235,.15);
   }
-  .check { display: flex; align-items: flex-start; gap: 8px; padding: 3px 0; }
-  .check input { margin-top: 2px; }
+  .check { display: flex; align-items: flex-start; gap: 8px; padding: 3px 0; min-width: 0; }
+  .check input { margin-top: 2px; flex: 0 0 auto; }
   .check span { font-size: 12.5px; }
   .hint { color: var(--muted); font-size: 11.5px; margin-top: 4px; }
   .row-inline { display: flex; align-items: center; gap: 8px; }
@@ -121,49 +140,56 @@
     user-select: none;
   }
   details.adv > summary::-webkit-details-marker { display: none; }
-  details.adv > summary::before {
-    content: "▸ ";
-    color: var(--accent);
-  }
+  details.adv > summary::before { content: "▸ "; color: var(--accent); }
   details.adv[open] > summary::before { content: "▾ "; }
   details.adv[open] > summary { border-bottom: 1px solid var(--line); }
   .adv-body { padding: 14px 16px; }
-  .adv-body .card { border: none; padding: 0; margin: 0 0 16px 0; }
+  .adv-body .card { border: none; padding: 0; margin: 0 0 18px 0; }
   .adv-body .card:last-child { margin-bottom: 0; }
-  .glass-block { border-top: 1px dashed var(--line); padding-top: 10px; margin-top: 10px; }
-  .glass-block:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+  /* Блок, который показывается только при включённом флажке. */
+  .dep {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--line);
+  }
+  .dep.is-hidden { display: none; }
+  .dep-title {
+    font-size: 12.5px; font-weight: 600; margin-bottom: 10px;
+  }
+  .dep-title small { font-weight: 400; color: var(--muted); }
+  .glass-block { margin-bottom: 14px; }
+  .glass-block:last-child { margin-bottom: 0; }
   .glass-title { font-size: 12.5px; font-weight: 600; margin-bottom: 6px; }
   .glass-title small { font-weight: 400; color: var(--muted); }
   footer {
-    display: flex; gap: 8px; align-items: center;
+    flex: 0 0 auto;
+    display: flex; flex-wrap: nowrap; gap: 8px; align-items: center;
     padding: 10px 18px; background: var(--panel);
     border-top: 1px solid var(--line);
+    min-height: 56px;
   }
   footer .spacer { flex: 1 1 auto; }
   footer button {
     padding: 7px 16px; border-radius: 6px; border: 1px solid var(--line);
     background: #fff; color: var(--text); font: inherit; cursor: pointer;
+    white-space: nowrap;
   }
   footer button:hover { background: #f0f2f5; }
   footer button.primary {
     background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
   }
   footer button.primary:hover { background: var(--accent-dark); }
+  footer .hint { margin: 0; }
   button.danger {
     padding: 7px 14px; border-radius: 6px; border: 1px solid rgba(192,57,43,.4);
     background: #fff; color: var(--danger); font: inherit; cursor: pointer;
   }
   button.danger:hover { background: #fdf0ee; }
-  .badge {
-    display: inline-block; font-size: 11px; color: var(--ok);
-    border: 1px solid rgba(15,157,88,.35); background: rgba(15,157,88,.08);
-    border-radius: 20px; padding: 1px 8px; margin-left: 6px;
-  }
 </style>
 </head>
 <body>
 <script>window.FACADE_EXPORT_DEMO = {
-  "version": 2,
+  "version": 3,
   "export": {
     "width": 9999,
     "height": 0,
@@ -195,7 +221,6 @@
       "render_mode": "shaded",
       "edges": false,
       "shadows": false,
-      "textures": true,
       "material_transparency": false,
       "shadow_azimuth": 45,
       "shadow_elevation": 45,
@@ -210,7 +235,6 @@
       "render_mode": "hidden",
       "edges": true,
       "shadows": false,
-      "textures": false,
       "material_transparency": false,
       "shadow_azimuth": 45,
       "shadow_elevation": 45,
@@ -225,7 +249,6 @@
       "render_mode": "hidden",
       "edges": false,
       "shadows": true,
-      "textures": false,
       "material_transparency": false,
       "shadow_azimuth": 45,
       "shadow_elevation": 45,
@@ -240,8 +263,8 @@
       "render_mode": "shaded",
       "edges": false,
       "shadows": false,
-      "textures": false,
       "material_transparency": false,
+      "glass_highlight": true,
       "split_windows": false,
       "shadow_azimuth": 45,
       "shadow_elevation": 45,
@@ -348,9 +371,11 @@
       (hint ? '<div class="hint">' + hint + '</div>' : '') + '</div>';
   }
 
-  function checkField(path, label, hint, kind) {
+  // toggle — идентификатор блока, который показывается при включённом флажке.
+  function checkField(path, label, hint, kind, toggle) {
     return '<div class="check"><input type="checkbox" data-path="' + path + '"' +
-      (kind ? ' data-kind="' + kind + '"' : '') + '>' +
+      (kind ? ' data-kind="' + kind + '"' : '') +
+      (toggle ? ' data-toggle="' + toggle + '"' : '') + '>' +
       '<span>' + esc(label) + (hint ? '<div class="hint">' + hint + '</div>' : '') + '</span></div>';
   }
 
@@ -362,11 +387,6 @@
     });
     html += '</select>' + (hint ? '<div class="hint">' + hint + '</div>' : '') + '</div>';
     return html;
-  }
-
-  function advanced(inner) {
-    return '<details class="adv"><summary>Расширенные настройки</summary>' +
-      '<div class="adv-body">' + inner + '</div></details>';
   }
 
   /* ------------------------------------------------ вкладка «Экспорт» */
@@ -399,7 +419,7 @@
     adv += selectField('export.aspect', 'Соотношение сторон кадра', ASPECTS,
       'Для высоких объектов кадр автоматически разворачивается: 9999 уходит по вертикали.');
     adv += '<div></div>';
-    adv += '</div><div class="grid one" style="margin-top:10px">';
+    adv += '</div><div class="grid one" style="margin-top:12px">';
     adv += checkField('export.projection', 'Параллельная проекция',
       'Включена по умолчанию. Если снять — перспектива (для художественных видов).',
       'projection');
@@ -414,7 +434,7 @@
     adv += '<div class="card"><h2>Стиль и фон</h2><div class="grid">';
     adv += textField('export.background', 'Цвет фона (#RRGGBB)', 'По умолчанию белый: #FFFFFF.');
     adv += '<div></div>';
-    adv += '</div><div class="grid one" style="margin-top:10px">';
+    adv += '</div><div class="grid one" style="margin-top:12px">';
     adv += checkField('export.transparent', 'Прозрачный фон PNG',
       'Прозрачность важнее цвета фона, если оба включены.');
     adv += checkField('export.antialias', 'Сглаживание (antialias)', 'По умолчанию выключено.');
@@ -429,28 +449,35 @@
            'дрожание, силуэты, задние рёбра и рентген отключаются всегда.</div>';
     adv += '</div></div>';
 
-    html += advanced(adv);
+    html += '<details class="adv"><summary>Расширенные настройки</summary>' +
+            '<div class="adv-body">' + adv + '</div></details>';
     html += '</section>';
     return html;
   }
 
-  /* ------------------------------------------------- вкладки карт */
+  /* ------------------------------------------------------ блоки стекла */
 
-  function glassBlock(index, key, title, note) {
+  function glassColors(index) {
     var p = 'maps.' + index + '.';
-    var html = '<div class="glass-block">';
-    html += '<div class="glass-title">' + esc(title) + ' <small>(' + esc(note) + ')</small></div>';
-    html += '<div class="grid three">';
-    html += numberField(p + key + '_h', 'H (тон)', 0, 360, 1);
-    html += numberField(p + key + '_s', 'S (насыщенность), %', 0, 100, 1);
-    html += numberField(p + key + '_l', 'L (яркость), %', 0, 100, 1);
-    html += '</div>';
-    html += '<div class="row-inline" style="margin-top:6px">' +
-            '<div class="swatch" id="swatch-' + index + '-' + key + '"></div>' +
-            '<span class="hint">цвет на карте окон</span></div>';
-    html += '</div>';
+    var html = '';
+    GLASS_ROWS.forEach(function (row) {
+      var key = row[0];
+      html += '<div class="glass-block">';
+      html += '<div class="glass-title">' + esc(row[1]) + ' <small>(' + esc(row[2]) + ')</small></div>';
+      html += '<div class="grid three">';
+      html += numberField(p + key + '_h', 'H (тон)', 0, 360, 1);
+      html += numberField(p + key + '_s', 'S (насыщенность), %', 0, 100, 1);
+      html += numberField(p + key + '_l', 'L (яркость), %', 0, 100, 1);
+      html += '</div>';
+      html += '<div class="row-inline" style="margin-top:6px">' +
+              '<div class="swatch" id="swatch-' + index + '-' + key + '"></div>' +
+              '<span class="hint">цвет на карте</span></div>';
+      html += '</div>';
+    });
     return html;
   }
+
+  /* ------------------------------------------------- вкладки карт */
 
   function mapTab(map, index) {
     var p = 'maps.' + index + '.';
@@ -458,52 +485,71 @@
     var isCustom = map.kind === 'custom';
     var html = '<section class="tab" id="tab-map-' + index + '">';
 
-    html += '<div class="card"><h2>Карта «' + esc(map.title) + '»</h2><div class="grid">';
+    // --- Основное: всё, что нужно каждый день
+    html += '<div class="card"><h2>Карта «' + esc(map.title) + '»</h2>';
+    html += '<div class="grid">';
     html += textField(p + 'title', 'Название карты (в имени файла)');
     html += selectField(p + 'render_mode', 'Режим отображения', RENDER_MODES);
-    html += '</div><div class="grid" style="margin-top:10px">';
+    html += '</div>';
+    html += '<div class="grid" style="margin-top:12px">';
     html += checkField(p + 'enabled', 'Экспортировать эту карту');
     html += checkField(p + 'edges', 'Края (линии)', 'Вкладка «Правка → Край».');
-    html += checkField(p + 'shadows', 'Тени', 'Лоток «Тени» → «Показать тени».');
+    html += checkField(p + 'shadows', 'Тени', 'Лоток «Тени» → «Показать тени».', null, 'shadows');
+    html += checkField(p + 'material_transparency', 'Прозрачность материала',
+      '«Правка → Грань → Прозрачность материала»: стекло видно сквозь.');
     html += '</div>';
+
+    // --- Настройки теней: только когда включён флажок «Тени»
+    html += '<div class="dep" data-dep="shadows">';
+    html += '<div class="dep-title">Настройки теней <small>(солнце 45° слева сверху)</small></div>';
+    html += '<div class="grid">';
+    html += numberField(p + 'shadow_azimuth', 'Смещение солнца влево, °', 0, 90, 1,
+      '45° — солнце слева сверху, тени падают вправо вниз.');
+    html += numberField(p + 'shadow_elevation', 'Высота солнца, °', 5, 89, 1,
+      '45° — тени под 45° к горизонту (как Elevation 45 Shadows).');
+    html += numberField(p + 'shadow_light', '«Светлее»', 0, 100, 1, 'Лоток «Тени», по умолчанию 100.');
+    html += numberField(p + 'shadow_dark', '«Темнее»', 0, 100, 1, 'Лоток «Тени», по умолчанию 0.');
+    html += '</div></div>';
+
     if (isCustom) {
-      html += '<div style="margin-top:10px"><button type="button" class="danger" ' +
+      html += '<div style="margin-top:14px"><button type="button" class="danger" ' +
               'data-remove-map="' + index + '">Удалить карту</button></div>';
     }
     html += '</div>';
 
-    var adv = '';
-    adv += '<div class="card"><h2>Отображение</h2><div class="grid one">';
-    adv += checkField(p + 'textures', 'Текстуры', 'Вкладка «Правка → Грань».');
-    adv += checkField(p + 'material_transparency', 'Прозрачность материала',
-      '«Правка → Грань → Прозрачность материала». Нужна, чтобы стекло было видно сквозь.');
+    // --- Окна: настройки отображения (только у карты «Окна»)
     if (isWindows) {
-      adv += checkField(p + 'split_windows', 'Разделять карты окон по типам стекла',
+      html += '<div class="card"><h2>Настройки отображения окон</h2>';
+      html += '<div class="grid one">';
+      html += checkField(p + 'split_windows', 'Разделять карты по типам стекла',
         'Вместо одной карты «Окна» будет три: «окно-стекло», «окно-тонировка», ' +
-        '«окно-ограждения». На картах текстур, линий и теней ограждения исчезают.');
-    }
-    adv += '</div></div>';
-
-    adv += '<div class="card"><h2>Солнце и тени</h2><div class="grid">';
-    adv += numberField(p + 'shadow_azimuth', 'Смещение солнца влево, °', 0, 90, 1,
-      '45° — солнце слева сверху, тени падают вправо вниз.');
-    adv += numberField(p + 'shadow_elevation', 'Высота солнца, °', 5, 89, 1,
-      '45° — тени под 45° к горизонту (как Elevation 45 Shadows).');
-    adv += numberField(p + 'shadow_light', '«Светлее»', 0, 100, 1);
-    adv += numberField(p + 'shadow_dark', '«Темнее»', 0, 100, 1);
-    adv += '</div></div>';
-
-    if (isWindows) {
-      adv += '<div class="card"><h2>Цвета стекла (H / S / L)</h2>';
-      adv += '<div class="hint" style="margin-bottom:8px">Тип стекла определяется по ' +
-             'непрозрачности материала. Исходные цвета возвращаются после экспорта.</div>';
-      GLASS_ROWS.forEach(function (row) {
-        adv += glassBlock(index, row[0], row[1], row[2]);
-      });
-      adv += '</div>';
+        '«окно-ограждения». На остальных картах ограждения исчезают.');
+      html += '</div>';
+      html += '<div class="dep" data-dep="always">';
+      html += '<div class="dep-title">Цвета стекла (H / S / L)</div>';
+      html += glassColors(index);
+      html += '</div></div>';
     }
 
-    html += advanced(adv);
+    // --- Своя карта: полный набор настроек, включая окна и стекло
+    if (isCustom) {
+      html += '<div class="card"><h2>Окна и стекло</h2>';
+      html += '<div class="grid one">';
+      html += checkField(p + 'glass_highlight', 'Перекрашивать стекло на этой карте',
+        'Материалы с непрозрачностью меньше 100 % окрашиваются по типам стекла; ' +
+        'после экспорта исходные цвета возвращаются.', null, 'glass');
+      html += '</div>';
+      html += '<div class="dep" data-dep="glass">';
+      html += '<div class="grid one">';
+      html += checkField(p + 'split_windows', 'Разделять карты по типам стекла',
+        'Вместо одной карты появятся три — по одной на каждый тип стекла.');
+      html += '</div>';
+      html += '<div class="dep" data-dep="always">';
+      html += '<div class="dep-title">Цвета стекла (H / S / L)</div>';
+      html += glassColors(index);
+      html += '</div></div></div>';
+    }
+
     html += '</section>';
     return html;
   }
@@ -523,8 +569,8 @@
       render_mode: 'shaded',
       edges: false,
       shadows: false,
-      textures: true,
       material_transparency: false,
+      glass_highlight: false,
       split_windows: false,
       shadow_azimuth: 45,
       shadow_elevation: 45,
@@ -534,6 +580,26 @@
       tinted_h: 180, tinted_s: 100, tinted_l: 50,
       railing_h: 300, railing_s: 100, railing_l: 50
     };
+  }
+
+  /* ------------------------------------------------ зависимости полей */
+
+  // Показывает блок data-dep="X" только при включённом флажке data-toggle="X"
+  // в той же вкладке. Сами поля из DOM не удаляются, поэтому их значения
+  // сохраняются даже в скрытом виде.
+  function updateDeps(scope) {
+    var root = scope || document;
+    root.querySelectorAll('[data-dep]').forEach(function (block) {
+      var dep = block.getAttribute('data-dep');
+      if (dep === 'always') {
+        block.classList.remove('is-hidden');
+        return;
+      }
+      var tab = block.closest('section.tab') || document;
+      var toggle = tab.querySelector('[data-toggle="' + dep + '"]');
+      var on = toggle ? !!toggle.checked : true;
+      block.classList.toggle('is-hidden', !on);
+    });
   }
 
   /* ------------------------------------------------------ отрисовка */
@@ -567,6 +633,7 @@
 
     bindFields();
     updateSwatches();
+    updateDeps(content);
 
     tabs.querySelectorAll('button[data-tab]').forEach(function (btn) {
       btn.addEventListener('click', function () {
@@ -616,6 +683,10 @@
       }
     });
 
+    document.querySelectorAll('[data-toggle]').forEach(function (el) {
+      el.addEventListener('change', function () { updateDeps(); });
+    });
+
     document.querySelectorAll('[data-path$=".title"]').forEach(function (el) {
       var path = el.getAttribute('data-path');
       var m = /^maps\.(\d+)\.title$/.exec(path);
@@ -623,10 +694,12 @@
       var btn = document.querySelector('nav button[data-tab="map-' + m[1] + '"]');
       el.addEventListener('input', function () {
         if (btn) btn.textContent = el.value;
+        var h2 = document.querySelector('#tab-map-' + m[1] + ' .card h2');
+        if (h2) h2.textContent = 'Карта «' + el.value + '»';
       });
     });
 
-    document.querySelectorAll('[data-path*="glass_"], [data-path$="_h"], [data-path$="_s"], [data-path$="_l"]').forEach(function (el) {
+    document.querySelectorAll('[data-path]').forEach(function (el) {
       el.addEventListener('input', updateSwatches);
     });
   }
@@ -648,6 +721,10 @@
         value = el.value;
       }
       setPath(settings, path, value);
+    });
+    // Текстуры задаются режимом отображения — отдельного поля нет.
+    (settings.maps || []).forEach(function (m) {
+      m.textures = m.render_mode === 'shaded';
     });
     return settings;
   }
@@ -679,20 +756,17 @@
 
   function updateSwatches() {
     if (!settings) return;
-    settings.maps.forEach(function (map, i) {
+    settings.maps.forEach(function (_map, i) {
       GLASS_ROWS.forEach(function (row) {
         var key = row[0];
         var sw = document.getElementById('swatch-' + i + '-' + key);
         if (!sw) return;
-        var h = getPath(settings, 'maps.' + i + '.' + key + '_h');
-        var s = getPath(settings, 'maps.' + i + '.' + key + '_s');
-        var l = getPath(settings, 'maps.' + i + '.' + key + '_l');
         var hEl = document.querySelector('[data-path="maps.' + i + '.' + key + '_h"]');
         var sEl = document.querySelector('[data-path="maps.' + i + '.' + key + '_s"]');
         var lEl = document.querySelector('[data-path="maps.' + i + '.' + key + '_l"]');
-        if (hEl) h = hEl.value;
-        if (sEl) s = sEl.value;
-        if (lEl) l = lEl.value;
+        var h = hEl ? hEl.value : getPath(settings, 'maps.' + i + '.' + key + '_h');
+        var s = sEl ? sEl.value : getPath(settings, 'maps.' + i + '.' + key + '_s');
+        var l = lEl ? lEl.value : getPath(settings, 'maps.' + i + '.' + key + '_l');
         var rgb = hslToRgb(h, s, l);
         sw.style.background = 'rgb(' + rgb.join(',') + ')';
         sw.title = 'RGB ' + rgb.join(', ');

@@ -114,7 +114,7 @@ check('Имя файла: префикс из окна сохранения со
       FacadeExport::Exporter.file_name('Дом_Иванова', 1, 'Текстура') == 'Дом_Иванова_Фасад_1_Текстура.png')
 
 settings = fresh_settings
-check('Версия настроек 2', settings.data['version'] == 2, settings.data['version'])
+check('Версия настроек 3', settings.data['version'] == 3, settings.data['version'])
 check('Ширина по умолчанию 9999', settings.exp('width') == 9999)
 check('Высота автоматическая (0)', settings.exp('height') == 0)
 check('Соотношение сторон 4:3', settings.exp('aspect') == '4:3', settings.exp('aspect').inspect)
@@ -135,6 +135,21 @@ check('Карта "Текстура": затенение + текстуры + б
       settings.map('texture')['render_mode'] == 'shaded' &&
       settings.map('texture')['textures'] == true &&
       settings.map('texture')['edges'] == false)
+check('Текстуры не настраиваются вручную: только режим затенения',
+      FacadeExport::Config.textures_for('shaded') == true &&
+      FacadeExport::Config.textures_for('hidden') == false &&
+      FacadeExport::Config.textures_for('wireframe') == false &&
+      FacadeExport::Config.textures_for('monochrome') == false)
+check('Карта "Линии": текстуры выключены сами (скрытые линии)',
+      settings.map('lines')['textures'] == false)
+check('Режим сменили -> текстуры пересчитались',
+      begin
+        fresh_settings
+        m = FacadeExport.settings.map('texture')
+        m['render_mode'] = 'hidden'
+        FacadeExport.settings.normalize!
+        m['textures'] == false
+      end)
 check('Карта "Линии": скрытые линии + края',
       settings.map('lines')['render_mode'] == 'hidden' &&
       settings.map('lines')['edges'] == true)
@@ -147,7 +162,9 @@ check('Карта "Тени": солнце 45°/45°, светлее 100, тем
       settings.map('shadows')['shadow_light'] == 100 &&
       settings.map('shadows')['shadow_dark'] == 0)
 win = settings.map('windows')
-check('Карта "Окна": режим затенения без текстур', win['render_mode'] == 'shaded' && win['textures'] == false)
+check('Карта "Окна": режим затенения с текстурами (из режима)',
+      win['render_mode'] == 'shaded' && win['textures'] == true, win['textures'].inspect)
+check('Карта "Окна": красит стекло всегда', FacadeExport::MapOptions.glass_highlight?(win) == true)
 check('Карта "Окна": разделение по типам стекла выключено', win['split_windows'] == false)
 check('Стекло: основное H125/S100/L50', win['main_h'] == 125 && win['main_s'] == 100 && win['main_l'] == 50)
 check('Стекло: тонировка H180/S100/L50', win['tinted_h'] == 180 && win['tinted_s'] == 100 && win['tinted_l'] == 50)
@@ -159,7 +176,12 @@ check('Своя карта: название по умолчанию', custom['t
 check('Своя карта: экспортируется', custom['enabled'] == true)
 check('Своя карта: редактируемые параметры на месте',
       custom.key?('render_mode') && custom.key?('edges') && custom.key?('shadows') &&
-      custom.key?('textures') && custom.key?('shadow_light'))
+      custom.key?('shadow_light') && custom.key?('material_transparency'))
+check('Своя карта: настройки стекла на месте',
+      custom.key?('glass_highlight') && custom.key?('split_windows') &&
+      custom.key?('main_h') && custom.key?('tinted_h') && custom.key?('railing_h'))
+check('Своя карта: стекло по умолчанию не красит',
+      FacadeExport::MapOptions.glass_highlight?(custom) == false)
 
 settings.replace!('export' => { 'width' => 99_999, 'line_scale' => -5, 'margin' => 5 },
                   'maps' => [{ 'key' => 'texture', 'enabled' => 'true', 'render_mode' => 'xxx' }])
@@ -479,6 +501,8 @@ check_close('Тени: высота солнца 45°', FacadeExport::Sun.elevat
 check_close('Тени: солнце слева сверху (азимут 225° для вида на север)',
             FacadeExport::Sun.azimuth_of(sh_sun), 225.0, 1.0)
 
+check('Линии: текстуры выключены режимом (Texture = false)', lines_w[:rendering]['Texture'] == false)
+check('Тени: текстуры выключены режимом (Texture = false)', shadows_w[:rendering]['Texture'] == false)
 check('Окна: тени выключены', windows_w[:shadow]['DisplayShadows'] == false)
 check('Окна: RenderMode 2', windows_w[:rendering]['RenderMode'] == 2)
 glass_main = shot(writes, 1, 'Окна', 'Стекло')
@@ -601,6 +625,57 @@ check('Имя файла со своей картой',
 custom_shot = write_for(view.writes, 1, 'Цветной фасад')
 check('Своя карта: выбранный режим отображения применён', custom_shot[:rendering]['RenderMode'] == 5,
       custom_shot[:rendering]['RenderMode'].inspect)
+
+# --- своя карта со стеклом
+clean_out
+model = new_model
+view = model.active_view
+fresh_settings
+custom_glass = FacadeExport::Config.new_custom_map(1)
+custom_glass['title'] = 'Витражи'
+custom_glass['glass_highlight'] = true
+FacadeExport.settings.maps << custom_glass
+FacadeExport.settings.normalize!
+jobs = FacadeExport::Exporter.output_jobs(FacadeExport.settings)
+check('Своя карта со стеклом: одна общая карта', jobs.map(&:title).include?('Витражи'),
+      jobs.map(&:title).inspect)
+custom_glass['split_windows'] = true
+jobs = FacadeExport::Exporter.output_jobs(FacadeExport.settings)
+check('Своя карта: разделение по типам стекла даёт 3 карты',
+      jobs.map(&:title).include?('Витражи — окно-стекло') &&
+      jobs.map(&:title).include?('Витражи — окно-тонировка') &&
+      jobs.map(&:title).include?('Витражи — окно-ограждения'), jobs.map(&:title).inspect)
+check('Задач у своей карты со стеклом: 3 из 7', jobs.count { |j| j.map['title'] == 'Витражи' } == 3,
+      jobs.map(&:title).inspect)
+result = FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Витражи', :facade_count => 1
+).run
+check('Файлы своей карты со стеклом созданы',
+      result.files.map { |f| File.basename(f) }.include?('Витражи_Фасад_1_Витражи — окно-стекло.png'),
+      result.files.map { |f| File.basename(f) }.inspect)
+custom_rail = shot(view.writes, 1, 'Витражи — окно-ограждения', 'Витрина')
+check('Своя карта: ограждения окрашены', custom_rail && custom_rail[2] == 1.0, custom_rail.inspect)
+
+# своя карта без стекла -> ограждения просто скрываются
+clean_out
+model = new_model
+view = model.active_view
+fresh_settings
+plain = FacadeExport::Config.new_custom_map(2)
+plain['title'] = 'Схема'
+FacadeExport.settings.maps << plain
+FacadeExport.settings.normalize!
+result = FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Схема', :facade_count => 1
+).run
+plain_w = write_for(view.writes, 1, 'Схема')
+check('Своя карта без стекла: одна карта',
+      result.files.map { |f| File.basename(f) }.count { |n| n.end_with?('_Схема.png') } == 1,
+      result.files.map { |f| File.basename(f) }.inspect)
+check('Своя карта без стекла: ограждения скрыты',
+      plain_w[:materials].find { |m| m[0] == 'Витрина' }[2] == 0.0)
 
 # ------------------------------------- 9. экспорт из открытой группы (п. 4)
 

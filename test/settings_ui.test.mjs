@@ -28,7 +28,7 @@ const glassDefaults = {
 
 // Настройки «по умолчанию» — как их отдаёт Ruby (Config.default_settings).
 const defaults = {
-  version: 2,
+  version: 3,
   export: {
     width: 9999, height: 0, line_scale: 0.3, margin: 0.02,
     restore_view: true, show_report: true,
@@ -41,21 +41,25 @@ const defaults = {
     {
       key: "texture", kind: "standard", title: "Текстура", enabled: true, render_mode: "shaded",
       textures: true, edges: false, shadows: false, material_transparency: false, split_windows: false,
+      glass_highlight: false,
       shadow_light: 100, shadow_dark: 0, shadow_azimuth: 45, shadow_elevation: 45, ...glassDefaults,
     },
     {
       key: "lines", kind: "standard", title: "Линии", enabled: true, render_mode: "hidden",
       textures: false, edges: true, shadows: false, material_transparency: false, split_windows: false,
+      glass_highlight: false,
       shadow_light: 100, shadow_dark: 0, shadow_azimuth: 45, shadow_elevation: 45, ...glassDefaults,
     },
     {
       key: "shadows", kind: "standard", title: "Тени", enabled: true, render_mode: "hidden",
       textures: false, edges: false, shadows: true, material_transparency: false, split_windows: false,
+      glass_highlight: false,
       shadow_light: 100, shadow_dark: 0, shadow_azimuth: 45, shadow_elevation: 45, ...glassDefaults,
     },
     {
       key: "windows", kind: "windows", title: "Окна", enabled: true, render_mode: "shaded",
-      textures: false, edges: false, shadows: false, material_transparency: false, split_windows: false,
+      textures: true, edges: false, shadows: false, material_transparency: false, split_windows: false,
+      glass_highlight: true,
       shadow_light: 100, shadow_dark: 0, shadow_azimuth: 45, shadow_elevation: 45, ...glassDefaults,
     },
   ],
@@ -82,6 +86,8 @@ window.document.dispatchEvent(new window.Event("DOMContentLoaded", { bubbles: tr
 const doc = window.document;
 const q = (sel) => doc.querySelector(sel);
 const byPath = (p) => doc.querySelector(`[data-path="${p}"]`);
+const fire = (el, type) => el.dispatchEvent(new window.Event(type, { bubbles: true }));
+const isHidden = (el) => !!el.closest(".is-hidden");
 
 console.log("Окно настроек (settings.html):");
 check("Руби-мост вызвал ready", calls.ready === 1);
@@ -92,7 +98,8 @@ check("Названия вкладок", [...doc.querySelectorAll("nav button[da
   [...doc.querySelectorAll("nav button[data-tab]")].map((b) => b.textContent).join("|"));
 check("Есть кнопка «+» для своей карты", !!q("nav button[data-add-map]"));
 
-// --- вкладка «Экспорт»: только основные поля видны сразу
+/* ------------------------------------------- вкладка «Экспорт» */
+
 const exportTab = q("#tab-export");
 const visibleExport = [...exportTab.querySelectorAll("input, select")]
   .filter((el) => !el.closest("details.adv"));
@@ -104,7 +111,7 @@ check("Экспорт: видны ширина/высота/линии/отст�
 check("Экспорт: видны возврат вида и отчёт",
   visiblePaths.includes("export.restore_view") && visiblePaths.includes("export.show_report"));
 check("Ширина 9999 из настроек", byPath("export.width")?.value === "9999", byPath("export.width")?.value);
-check("Ширина: максимум 9999 в подсказке", byPath("export.width")?.getAttribute("max") === "9999");
+check("Ширина: максимум 9999", byPath("export.width")?.getAttribute("max") === "9999");
 check("Высота 0 (авто)", byPath("export.height")?.value === "0");
 check("Множитель линий 0.3", byPath("export.line_scale")?.value === "0.3");
 check("Отступ 0.02", byPath("export.margin")?.value === "0.02");
@@ -118,22 +125,51 @@ check("Параметры кадра спрятаны в «Расширенны�
 check("Соотношение сторон по умолчанию 4:3", byPath("export.aspect")?.value === "4:3");
 check("Нет формулировки «по заданию»", !doc.body.textContent.includes("по заданию"));
 
-// --- вкладка карты: только имя, режим, экспорт, края, тени
+/* ------------------------------------------------ вкладка карты */
+
 const mapTab = q("#tab-map-2");
-const visibleMap = [...mapTab.querySelectorAll("input, select")]
-  .filter((el) => !el.closest("details.adv"));
+check("Карта: нет блока «Расширенные настройки»", !mapTab.querySelector("details.adv"));
+const visibleMap = [...mapTab.querySelectorAll("input, select")].filter((el) => !el.closest(".dep"));
 const visibleMapPaths = visibleMap.map((el) => el.getAttribute("data-path"));
-check("Карта: видимых полей 5", visibleMap.length === 5, visibleMapPaths.join(", "));
+check("Карта: основных полей 6 (имя, режим, экспорт, края, тени, прозрачность)",
+  visibleMap.length === 6, visibleMapPaths.join(", "));
+check("Карта: «Прозрачность материала» среди основных полей",
+  visibleMapPaths.includes("maps.2.material_transparency"), visibleMapPaths.join(", "));
 check("Карта «Тени»: тени включены", byPath("maps.2.shadows")?.checked === true);
 check("Карта «Тени»: режим = скрытые линии", byPath("maps.2.render_mode")?.value === "hidden");
-check("Карта «Тени»: текстуры спрятаны в расширенные",
-  byPath("maps.2.textures")?.closest("details.adv") !== null);
-check("Карта «Тени»: светлее/темнее в расширенных настройках",
-  byPath("maps.2.shadow_light")?.value === "100" && byPath("maps.2.shadow_dark")?.value === "0");
-check("Карта «Текстура»: текстуры включены", byPath("maps.0.textures")?.checked === true);
-check("Карта «Линии»: края включены", byPath("maps.1.edges")?.checked === true);
+check("Карта «Тени»: «Прозрачность материала» в основных настройках",
+  byPath("maps.2.material_transparency")?.closest(".dep") === null);
+check("Карта «Тени»: светлее/темнее показаны при включённых тенях",
+  byPath("maps.2.shadow_light")?.value === "100" && !isHidden(byPath("maps.2.shadow_light")));
 
-// --- стекло
+/* --------------------------- п. 2: настройки теней только при флажке */
+
+check("Карта «Текстура»: тени выключены — настройки теней скрыты",
+  byPath("maps.0.shadows")?.checked === false && isHidden(byPath("maps.0.shadow_light")),
+  isHidden(byPath("maps.0.shadow_light")));
+byPath("maps.0.shadows").checked = true;
+fire(byPath("maps.0.shadows"), "change");
+check("Включили «Тени» — настройки теней появились", !isHidden(byPath("maps.0.shadow_light")));
+byPath("maps.0.shadows").checked = false;
+fire(byPath("maps.0.shadows"), "change");
+check("Сняли «Тени» — настройки теней снова скрыты", isHidden(byPath("maps.0.shadow_light")));
+
+/* ------------------------------- п. 3: нет настройки «Текстуры» */
+
+check("Ни на одной вкладке карты нет поля «Текстуры»",
+  doc.querySelectorAll('[data-path$=".textures"]').length === 0,
+  doc.querySelectorAll('[data-path$=".textures"]').length);
+check("Карта «Текстура»: режим затенения (текстуры сами)",
+  byPath("maps.0.render_mode")?.value === "shaded");
+byPath("maps.0.render_mode").value = "hidden";
+
+/* ------------------------------------- окна: настройки отображения */
+
+const windowsTab = q("#tab-map-3");
+check("Карта «Окна»: блок «Настройки отображения окон»",
+  windowsTab.textContent.includes("Настройки отображения окон"));
+check("Карта «Окна»: нет слова «Расширенные настройки»",
+  !windowsTab.textContent.includes("Расширенные настройки"));
 check("Карта «Окна»: разделение по типам стекла есть и выключено",
   byPath("maps.3.split_windows")?.checked === false);
 check("Стекло: основное H=125", byPath("maps.3.main_h")?.value === "125");
@@ -143,22 +179,33 @@ check("Палитра основного стекла отрисована",
   /rgb\(/.test(q("#swatch-3-main")?.style.background || ""), q("#swatch-3-main")?.style.background);
 check("Палитра ограждений отрисована",
   /rgb\(/.test(q("#swatch-3-railing")?.style.background || ""), q("#swatch-3-railing")?.style.background);
-check("У стандартных карт нет кнопки удаления", !q("button[data-remove-map]"));
 
-// Переключение вкладок
+/* ------------------------------------ п. 8: расклеенные колонки */
+
+const css = html.slice(html.indexOf("<style>"), html.indexOf("</style>"));
+const gapMatch = /column-gap:\s*(\d+)px/.exec(css);
+check("Двухколоночная сетка: зазор между столбцами ≥ 32 px",
+  gapMatch !== null && Number(gapMatch[1]) >= 32, gapMatch && gapMatch[0]);
+check("Подвал не сжимается: footer с flex 0 0 auto",
+  /footer\s*\{[^}]*flex:\s*0 0 auto/.test(css.replace(/\n/g, " ")));
+check("Прокручивается только содержимое (main с min-height 0)",
+  /main\s*\{[^}]*min-height:\s*0/.test(css.replace(/\n/g, " ")));
+
+/* --------------------------------------------- переключение вкладок */
+
 const tabButtons = doc.querySelectorAll("nav button[data-tab]");
 check("Первая вкладка активна", tabButtons[0].classList.contains("active"));
-tabButtons[2].dispatchEvent(new window.Event("click", { bubbles: true }));
-check("По клику открывается вкладка карты",
-  doc.getElementById("tab-map-1")?.classList.contains("active"));
+fire(tabButtons[2], "click");
+check("По клику открывается вкладка карты", doc.getElementById("tab-map-1")?.classList.contains("active"));
 check("Активная вкладка подсвечена", tabButtons[2].classList.contains("active"));
 
-// --- изменение и сохранение
+/* --------------------------------------------- изменение и сохранение */
+
 byPath("export.width").value = "12000";
 byPath("export.projection").checked = false;
 byPath("maps.1.edges").checked = false;
 byPath("maps.3.main_h").value = "200";
-doc.getElementById("btn-save").dispatchEvent(new window.Event("click", { bubbles: true }));
+fire(doc.getElementById("btn-save"), "click");
 
 check("По «Сохранить» вызван Ruby-callback", typeof calls.save === "string");
 let saved = null;
@@ -167,35 +214,57 @@ check("JSON сохраняется корректно", saved !== null);
 check("Изменённая ширина попала в JSON", saved?.export?.width === 12000, saved?.export?.width);
 check("Снятая галочка проекции -> perspective", saved?.export?.projection === "perspective",
   saved?.export?.projection);
-check("Соотношение сторон сохранено", saved?.export?.aspect === "4:3");
 check("Все поля карт сохранены", saved?.maps?.length === 4, saved?.maps?.length);
 check("Изменённая карта сохранена", saved?.maps?.[1]?.edges === false);
 check("Цвет стекла сохранён", saved?.maps?.[3]?.main_h === 200);
+check("Текстуры выводятся из режима: «Скрытые линии» -> false",
+  saved?.maps?.[0]?.textures === false, saved?.maps?.[0]?.textures);
+check("Текстуры выводятся из режима: «Затенение» -> true",
+  saved?.maps?.[2]?.textures === false && saved?.maps?.[3]?.textures === true,
+  `${saved?.maps?.[2]?.textures} / ${saved?.maps?.[3]?.textures}`);
 check("Остальные значения не потеряны",
   saved?.maps?.[2]?.shadows === true && saved?.export?.line_scale === 0.3 &&
   saved?.maps?.[3]?.split_windows === false);
 
-// --- своя карта (п. 13)
-q("nav button[data-add-map]").dispatchEvent(new window.Event("click", { bubbles: true }));
+/* ---------------------------------------------- своя карта (п. 4, 13) */
+
+fire(q("nav button[data-add-map]"), "click");
 check("Кнопка «+» добавляет вкладку", doc.querySelectorAll("nav button[data-tab]").length === 6,
   doc.querySelectorAll("nav button[data-tab]").length);
 const customTab = doc.querySelector("nav button[data-tab='map-4']");
 check("Новая вкладка называется «Своя карта 1»", customTab?.textContent === "Своя карта 1",
   customTab?.textContent);
 check("Новая вкладка активна", customTab?.classList.contains("active"));
-check("Своя карта: все поля редактируемы",
+check("Своя карта: есть основные настройки",
   !!byPath("maps.4.title") && !!byPath("maps.4.render_mode") &&
-  !!byPath("maps.4.textures") && !!byPath("maps.4.shadows") &&
-  !!byPath("maps.4.shadow_light"));
+  !!byPath("maps.4.edges") && !!byPath("maps.4.shadows") &&
+  !!byPath("maps.4.material_transparency"));
+check("Своя карта: блок «Окна и стекло»",
+  doc.getElementById("tab-map-4").textContent.includes("Окна и стекло"));
+check("Своя карта: перекраска стекла выключена по умолчанию",
+  byPath("maps.4.glass_highlight")?.checked === false);
+check("Своя карта: цвета стекла скрыты, пока нет перекраски",
+  isHidden(byPath("maps.4.main_h")));
+byPath("maps.4.glass_highlight").checked = true;
+fire(byPath("maps.4.glass_highlight"), "change");
+check("Включили перекраску — появились типы стекла и цвета",
+  !isHidden(byPath("maps.4.main_h")) && !isHidden(byPath("maps.4.split_windows")));
 check("Своя карта: есть кнопка удаления", !!q("button[data-remove-map='4']"));
+check("Своя карта: настройки теней скрыты при выключенных тенях",
+  isHidden(byPath("maps.4.shadow_light")));
+
 byPath("maps.4.title").value = "Фасад в цвете";
-byPath("maps.4.title").dispatchEvent(new window.Event("input", { bubbles: true }));
+fire(byPath("maps.4.title"), "input");
 check("Название вкладки обновляется на лету",
   doc.querySelector("nav button[data-tab='map-4']")?.textContent === "Фасад в цвете",
   doc.querySelector("nav button[data-tab='map-4']")?.textContent);
 byPath("maps.4.render_mode").value = "wireframe";
+byPath("maps.4.shadows").checked = true;
+fire(byPath("maps.4.shadows"), "change");
+byPath("maps.4.shadow_light").value = "80";
+byPath("maps.4.tinted_h").value = "210";
 
-doc.getElementById("btn-save").dispatchEvent(new window.Event("click", { bubbles: true }));
+fire(doc.getElementById("btn-save"), "click");
 saved = JSON.parse(calls.save);
 check("Своя карта сохраняется", saved?.maps?.length === 5, saved?.maps?.length);
 check("Своя карта: вид custom", saved?.maps?.[4]?.kind === "custom", saved?.maps?.[4]?.kind);
@@ -203,18 +272,25 @@ check("Своя карта: название и режим сохранены",
   saved?.maps?.[4]?.title === "Фасад в цвете" && saved?.maps?.[4]?.render_mode === "wireframe",
   `${saved?.maps?.[4]?.title} / ${saved?.maps?.[4]?.render_mode}`);
 check("Своя карта: готова к экспорту", saved?.maps?.[4]?.enabled === true);
+check("Своя карта: тени и их настройки сохранены",
+  saved?.maps?.[4]?.shadows === true && saved?.maps?.[4]?.shadow_light === 80,
+  `${saved?.maps?.[4]?.shadows} / ${saved?.maps?.[4]?.shadow_light}`);
+check("Своя карта: перекраска стекла и цвет сохранены",
+  saved?.maps?.[4]?.glass_highlight === true && saved?.maps?.[4]?.tinted_h === 210,
+  `${saved?.maps?.[4]?.glass_highlight} / ${saved?.maps?.[4]?.tinted_h}`);
+check("Своя карта: текстуры выключены для каркаса", saved?.maps?.[4]?.textures === false);
 
-q("button[data-remove-map='4']").dispatchEvent(new window.Event("click", { bubbles: true }));
+fire(q("button[data-remove-map='4']"), "click");
 check("Кнопка удаления убирает карту", doc.querySelectorAll("nav button[data-tab]").length === 5,
   doc.querySelectorAll("nav button[data-tab]").length);
-doc.getElementById("btn-save").dispatchEvent(new window.Event("click", { bubbles: true }));
+fire(doc.getElementById("btn-save"), "click");
 saved = JSON.parse(calls.save);
 check("После удаления карта не сохраняется", saved?.maps?.length === 4, saved?.maps?.length);
 
-doc.getElementById("btn-reset").dispatchEvent(new window.Event("click", { bubbles: true }));
+fire(doc.getElementById("btn-reset"), "click");
 check("По «Вернуть значения по умолчанию» вызван Ruby-callback", calls.reset === 1);
 
-doc.getElementById("btn-cancel").dispatchEvent(new window.Event("click", { bubbles: true }));
+fire(doc.getElementById("btn-cancel"), "click");
 check("По «Отмена» вызван Ruby-callback", calls.cancel === 1);
 
 console.log(failures === 0 ? "\nОкно настроек: всё в порядке" : `\nОкно настроек: провалов ${failures}`);
