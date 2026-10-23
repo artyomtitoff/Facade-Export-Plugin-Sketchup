@@ -22,7 +22,57 @@ module FacadeExport
     MODES = %w[combined main tinted railing hide_railings].freeze
     TYPES = %w[main tinted railing].freeze
 
-    attr_reader :recolored, :hidden
+    # Один найденный стеклянный материал: материал, его непрозрачность и тип.
+    Entry = Struct.new(:material, :alpha, :type)
+
+    attr_reader :recolored, :hidden, :entries
+
+    # Один раз просматривает материалы модели и возвращает список стекла.
+    # Дальше этот список переиспользуется для всех карт и фасадов — плагин
+    # не ищет окна заново на каждое изображение (раньше «пустая» карта окон
+    # тратила на это больше времени, чем сам рендер).
+    def self.scan(model, options = {})
+      railing_max = (options[:railing_max] || Config::GLASS_RAILING_MAX).to_f
+      tinted_min  = (options[:tinted_min] || Config::GLASS_TINTED_MIN).to_f
+      opaque_min  = (options[:opaque_min] || Config::GLASS_OPAQUE_MIN).to_f
+      list = []
+      materials = begin
+        model.materials
+      rescue StandardError
+        nil
+      end
+      return list if materials.nil?
+      materials.each do |mat|
+        begin
+          alpha = alpha_of(mat)
+          next if alpha.nil?
+          type = type_for(alpha * 100.0, railing_max, tinted_min, opaque_min)
+          next if type.nil?
+          list << Entry.new(mat, alpha, type)
+        rescue StandardError => e
+          FacadeExport.log("Материал пропущен: #{e.message}")
+        end
+      end
+      list
+    end
+
+    def self.alpha_of(mat)
+      if mat.respond_to?(:use_alpha?) && mat.use_alpha? == false
+        return 1.0
+      end
+      return mat.alpha.to_f if mat.respond_to?(:alpha)
+      c = mat.color
+      c ? c.alpha.to_f / 255.0 : 1.0
+    rescue StandardError
+      nil
+    end
+
+    def self.type_for(opacity_percent, railing_max, tinted_min, opaque_min)
+      return 'railing' if opacity_percent <= railing_max
+      return 'tinted' if opacity_percent >= tinted_min && opacity_percent < opaque_min
+      return 'main' if opacity_percent < tinted_min
+      nil
+    end
 
     def initialize(model, colors, options = {})
       @model = model
@@ -32,6 +82,7 @@ module FacadeExport
       @railing_max = (options[:railing_max] || Config::GLASS_RAILING_MAX).to_f
       @tinted_min  = (options[:tinted_min] || Config::GLASS_TINTED_MIN).to_f
       @opaque_min  = (options[:opaque_min] || Config::GLASS_OPAQUE_MIN).to_f
+      @entries = options[:entries]
       @saved = []
       @applied = false
       @recolored = 0
@@ -45,21 +96,25 @@ module FacadeExport
     # Применяет режим к материалам модели. Возвращает число изменённых материалов.
     def apply
       return 0 if @applied
-      @model.materials.each do |mat|
+      entries.each do |entry|
         begin
-          alpha = material_alpha(mat)
-          next if alpha.nil?
-          type = classify(alpha * 100.0)
-          next if type.nil?
-          action = action_for(type)
+          action = action_for(entry.type)
           next if action.nil?
-          change_material(mat, alpha, type, action)
+          change_material(entry, action)
         rescue StandardError => e
-          FacadeExport.log("Материал \"#{safe_name(mat)}\" не изменён: #{e.message}")
+          FacadeExport.log("Материал \"#{safe_name(entry.material)}\" не изменён: #{e.message}")
         end
       end
       @applied = true
       @recolored + @hidden
+    end
+
+    # Список стекла: заранее посчитанный (options[:entries]) или свой.
+    def entries
+      @entries ||= self.class.scan(@model,
+                                   :railing_max => @railing_max,
+                                   :tinted_min => @tinted_min,
+                                   :opaque_min => @opaque_min)
     end
 
     # Возвращает исходные цвета, непрозрачность и текстуры.
@@ -79,7 +134,7 @@ module FacadeExport
             end
           end
           c = state[:color]
-          mat.color = Sketchup::Color.new(c[0], c[1], c[2], c[3])
+          mat.color = Sketchup::Color.new(c[0], c[1], c[2], c[3]) if c
           mat.alpha = state[:alpha]
         rescue StandardError => e
           FacadeExport.log("Материал \"#{safe_name(mat)}\" не восстановлен: #{e.message}")
@@ -119,11 +174,14 @@ module FacadeExport
       end
     end
 
-    def change_material(mat, alpha, type, action)
-      state = save_state(mat, alpha)
+    def change_material(entry, action)
+      mat = entry.material
+      # Полное состояние (с текстурой) нужно только при перекраске:
+      # для «сделать непрозрачным» и «скрыть» меняется одна непрозрачность.
+      state = save_state(mat, entry.alpha, action == :color)
       case action
       when :color
-        color = @colors[type] || @colors['main'] || [0, 255, 21]
+        color = @colors[entry.type] || @colors['main'] || [0, 255, 21]
         mat.texture = nil if state[:texture]
         mat.color = Sketchup::Color.new(color[0], color[1], color[2])
         mat.alpha = 1.0
@@ -142,18 +200,9 @@ module FacadeExport
       mat.respond_to?(:name) ? mat.name : mat.to_s
     end
 
-    def material_alpha(mat)
-      if mat.respond_to?(:use_alpha?) && mat.use_alpha? == false
-        return 1.0
-      end
-      return mat.alpha.to_f if mat.respond_to?(:alpha)
-      c = mat.color
-      c ? c.alpha.to_f / 255.0 : 1.0
-    rescue StandardError
-      nil
-    end
-
-    def save_state(mat, alpha)
+    def save_state(mat, alpha, with_texture)
+      state = { :material => mat, :alpha => alpha }
+      return state unless with_texture
       color = mat.color
       texture = nil
       tw = nil
@@ -167,14 +216,11 @@ module FacadeExport
       rescue StandardError
         texture = nil
       end
-      {
-        :material => mat,
-        :color => [color.red, color.green, color.blue, color.alpha],
-        :alpha => alpha,
-        :texture => texture,
-        :texture_width => tw,
-        :texture_height => th
-      }
+      state[:color] = [color.red, color.green, color.blue, color.alpha] if color
+      state[:texture] = texture
+      state[:texture_width] = tw
+      state[:texture_height] = th
+      state
     end
   end
 end

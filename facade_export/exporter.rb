@@ -14,6 +14,7 @@
 #   5. Возвращаем стиль, тени, камеру, выделение и видимость объектов.
 
 require 'fileutils'
+require 'tmpdir'
 
 module FacadeExport
   # Производные признаки карты, которые не хранятся в настройках напрямую.
@@ -120,6 +121,7 @@ module FacadeExport
       isolated = []
 
       begin
+        begin_export_operation
         clear_selection
         isolated = isolate_context
         apply_base_style(style)
@@ -142,16 +144,32 @@ module FacadeExport
         @result.expected = total
         done = 0
 
-        @facade_count.times do |facade_index|
-          number = @first_number + facade_index
-          @view.camera = cameras[facade_index]
-          # Помечаем вид как «требуется перерисовка», чтобы write_image
-          # считал кадр уже с новой камерой.
-          invalidate_view
-          jobs.each do |job|
-            done += 1
-            report_progress(done, total, number, job)
-            render_job(job, directions[facade_index], number, style, shadow)
+        # Сначала карта, потом фасады: стиль карты и работа с материалами
+        # выполняются один раз на карту, а не на каждый фасад. Для карты окон
+        # это главная экономия — перекраска стекла больше не повторяется
+        # четыре раза подряд (и карта без окон не тратит на это время вовсе).
+        jobs.each do |job|
+          glass = nil
+          begin
+            apply_map_style(job.map, directions[0], style, shadow, job)
+            glass = apply_glass(job.map, job)
+            @facade_count.times do |facade_index|
+              number = @first_number + facade_index
+              done += 1
+              report_progress(done, total, number, job)
+              @view.camera = cameras[facade_index]
+              # Помечаем вид как «требуется перерисовка», чтобы write_image
+              # считал кадр уже с новой камерой.
+              invalidate_view
+              apply_shadows(job.map, directions[facade_index], shadow)
+              write_job(job, number)
+            end
+          rescue StandardError => e
+            @result.errors << "#{job.title}: #{e.message}"
+            FacadeExport.log("Карта \"#{job.title}\" не выполнена: #{e.message}\n" \
+                             "#{e.backtrace.first(5).join("\n")}")
+          ensure
+            glass.restore if glass
           end
         end
       ensure
@@ -160,6 +178,8 @@ module FacadeExport
         restore_selection(selection)
         set_status_text(previous_status)
         invalidate_view
+        end_export_operation
+        cleanup_temp_dir
       end
 
       @result.elapsed = Time.now - started
@@ -185,6 +205,32 @@ module FacadeExport
       false
     end
 
+    # Вся временная работа с моделью идёт внутри одной служебной операции,
+    # которая в конце ОТМЕНЯЕТСЯ (abort_operation). Пользователь не увидит
+    # в журнале «Отменить» ни одного шага экспорта: после экспорта история
+    # остаётся такой же, как до нажатия кнопки, и её не нужно тратить на
+    # откат служебных изменений.
+    def begin_export_operation
+      @operation_open = false
+      result = @model.start_operation('Экспорт фасадов', true)
+      @operation_open = result.nil? || result == true
+      @operation_open
+    rescue StandardError => e
+      @operation_open = false
+      FacadeExport.log("Не удалось открыть служебную операцию экспорта: #{e.message}")
+      false
+    end
+
+    def end_export_operation
+      return false unless @operation_open
+      @operation_open = false
+      @model.abort_operation
+      true
+    rescue StandardError => e
+      FacadeExport.log("Не удалось отменить служебную операцию экспорта: #{e.message}")
+      false
+    end
+
     # Строит направления, камеры и размер кадра.
     #   * обычный режим — кадр по габаритам объекта (Framing.plan);
     #   * «только видимый участок» — кадр как на экране (Framing.visible_cameras).
@@ -197,8 +243,23 @@ module FacadeExport
         return [directions, cameras, plan, :visible]
       end
 
-      directions = Framing.facade_directions(@view.camera, @facade_count)
-      bounds, scope = Framing.content_bounds(@model)
+      # При экспорте одного фасада можно всё равно проанализировать все
+      # четыре направления и взять масштаб по самому большому фасаду —
+      # тогда одиночный кадр совпадает по масштабу с полным экспортом.
+      analysis_count = @facade_count
+      if @facade_count < 4 && @settings.exp('fit_all_facades')
+        analysis_count = 4
+      end
+
+      directions = Framing.facade_directions(@view.camera, analysis_count)
+      # Габариты уже посчитаны в validate! — не обходим модель второй раз.
+      bounds = @bounds
+      scope = @scope
+      if bounds.nil?
+        bounds, scope = Framing.content_bounds(@model)
+        @bounds = bounds
+        @scope = scope
+      end
       plan = Framing.plan(bounds, directions, @settings.export)
       cameras = directions.each_with_index.map do |direction, index|
         Framing.build_camera(
@@ -206,7 +267,7 @@ module FacadeExport
           plan[:image_width], plan[:image_height], plan[:gap], parallel
         )
       end
-      [directions, cameras, plan, scope]
+      [directions.first(@facade_count), cameras.first(@facade_count), plan, scope]
     end
 
     def validate!
@@ -222,8 +283,9 @@ module FacadeExport
         raise ExportError, "Не удалось создать папку для сохранения: #{e.message}"
       end
       Framing.facade_directions(@view.camera, 1)
-      bounds, _scope = Framing.content_bounds(@model)
-      Framing.bbox_corners(bounds)
+      Framing.reset_cache!
+      @bounds, @scope = Framing.content_bounds(@model)
+      Framing.bbox_corners(@bounds)
       true
     end
 
@@ -232,16 +294,21 @@ module FacadeExport
       e = @settings.export
       white = Util.to_color(e['background'] || '#FFFFFF')
       options = {
-        # Вид
-        'HideConstructionGeometry' => e['hide_guides'] ? true : false,
+        # Вид: служебная графика (направляющие, оси, тексты, размеры,
+        # скрытые объекты) не рисуется в кадре никогда.
+        'HideConstructionGeometry' => true,
         'ShowViewName' => false,
         'DisplayWatermarks' => e['hide_watermarks'] ? false : true,
         'DisplayFog' => false,
         'DrawHidden' => false,
+        'DisplaySketchAxes' => false,
+        'DisplayInstanceAxes' => false,
+        'DisplayText' => false,
+        'DisplayDims' => false,
 
-        # Правка > Фон
-        'DrawSky'   => e['show_sky'] ? true : false,
-        'DrawGround' => e['show_ground'] ? true : false,
+        # Правка > Фон: «Скрывать небо» и «Скрывать землю» включены по умолчанию.
+        'DrawSky'   => e['hide_sky'] ? false : true,
+        'DrawGround' => e['hide_ground'] ? false : true,
         'DrawHorizon' => false,
         'BackgroundColor' => white,
         'SkyColor' => white,
@@ -264,20 +331,15 @@ module FacadeExport
         # "Section Cuts" делает модель снова целой, поэтому этот параметр всегда
         # включён. Плоскости сечений (их рамки) по умолчанию не рисуем.
         'DisplaySectionCuts'   => true,
-        'DisplaySectionPlanes' => e['show_section_planes'] ? true : false
+        'DisplaySectionPlanes' => false
       }
       options['DisplayLineStyles'] = false if style.supported?('DisplayLineStyles')
-      if e['hide_annotations']
-        options['DisplaySketchAxes'] = false
-        options['DisplayInstanceAxes'] = false
-        options['DisplayText'] = false
-        options['DisplayDims'] = false
-      end
       style.apply(options)
     end
 
     # Шаг 3 задания: стиль конкретной карты.
-    def apply_map_style(map, direction, style, shadow, job)
+    # Стиль карты: один раз на карту (не зависит от фасада).
+    def apply_map_style(map, _direction, style, _shadow, job)
       mode = Config::RENDER_MODES[map['render_mode']] || 2
       style.apply(
         'RenderMode' => mode,
@@ -285,7 +347,10 @@ module FacadeExport
         'EdgeDisplayMode' => map['edges'] ? Config::EDGE_MODES['all'] : Config::EDGE_MODES['none'],
         'MaterialTransparency' => transparency_for(map, job) ? true : false
       )
+    end
 
+    # Тени зависят от фасада: солнце ставится заново для каждого направления.
+    def apply_shadows(map, direction, shadow)
       use_sun = @settings.exp('sun_for_shading') ? true : false
       if map['shadows']
         info = Sun.setup(
@@ -346,32 +411,25 @@ module FacadeExport
       FacadeExport.log(message)
     end
 
-    def render_job(job, direction, number, style, shadow)
-      map = job.map
-      glass = nil
+    # Запись одного кадра: файл в папку пользователя, статистика в отчёт.
+    def write_job(job, number)
       path = file_path(number, job)
       started = Time.now
-      begin
-        apply_map_style(map, direction, style, shadow, job)
-        glass = apply_glass(map, job)
-        ok = write_image(path)
-        if ok && File.exist?(path)
-          @result.files << path
-          @result.per_image << [path, Time.now - started, file_size(path)]
-        else
-          @result.errors << "Не удалось сохранить файл: #{File.basename(path)}"
-        end
-      rescue StandardError => e
-        @result.errors << "#{job.title} (фасад #{number}): #{e.message}"
-        FacadeExport.log("Ошибка экспорта #{File.basename(path)}: #{e.message}\n" \
-                         "#{e.backtrace.first(5).join("\n")}")
-      ensure
-        glass.restore if glass
+      ok = write_image(path)
+      if ok && File.exist?(path)
+        @result.files << path
+        @result.per_image << [path, Time.now - started, file_size(path)]
+      else
+        @result.errors << "Не удалось сохранить файл: #{File.basename(path)}"
       end
+    rescue StandardError => e
+      @result.errors << "#{job.title} (фасад #{number}): #{e.message}"
+      FacadeExport.log("Ошибка экспорта #{File.basename(path)}: #{e.message}\n" \
+                       "#{e.backtrace.first(5).join("\n")}")
     end
 
     def apply_glass(map, job)
-      return nil unless transparent_materials? || job.glass_mode != 'hide_railings'
+      return nil unless glass_needed?(job)
       colors = {
         'main'    => Util.hsl_to_rgb(map['main_h'], map['main_s'], map['main_l']),
         'tinted'  => Util.hsl_to_rgb(map['tinted_h'], map['tinted_s'], map['tinted_l']),
@@ -382,37 +440,159 @@ module FacadeExport
         :mode => job.glass_mode,
         :railing_max => Config::GLASS_RAILING_MAX,
         :tinted_min => Config::GLASS_TINTED_MIN,
-        :opaque_min => Config::GLASS_OPAQUE_MIN
+        :opaque_min => Config::GLASS_OPAQUE_MIN,
+        :entries => glass_entries
       )
       recolored.apply
       recolored
     end
 
+    # Список стеклянных материалов считается один раз на весь экспорт.
+    def glass_entries
+      @glass_entries ||= GlassRecolor.scan(
+        @model,
+        :railing_max => Config::GLASS_RAILING_MAX,
+        :tinted_min => Config::GLASS_TINTED_MIN,
+        :opaque_min => Config::GLASS_OPAQUE_MIN
+      )
+    end
+
+    # Нужно ли вообще что-то делать с материалами для этой карты.
+    # Если стекла в модели нет, карта окон не тратит время на поиск окон.
+    def glass_needed?(job)
+      return false if glass_entries.empty?
+      mode = job.glass_mode.to_s
+      return true if mode == 'combined' || mode == 'hide_railings'
+      glass_entries.any? { |entry| entry.type.to_s == mode }
+    end
+
     # Экспорт PNG: ширина/высота кадра считаются по содержимому,
     # а не по размеру окна просмотра, поэтому файлы одинаковы на любом ПК.
+    #
+    # Файл пишется не сразу в папку пользователя, а во временную папку,
+    # и только потом копируется на место:
+    #   * SketchUp больше не держит открытым файл в папке результата
+    #     (именно из-за этого Windows писала «файл открыт в COM Surrogate»
+    #     и не давала удалить/перенести готовый PNG);
+    #   * Проводник не видит недописанный .png и не запускает для него
+    #     предпросмотр (dllhost.exe), который блокирует файл на минуты.
     def write_image(path)
+      options = image_options
+      temp = temp_file_path(path)
+      if temp
+        remove_existing(temp)
+        ok = do_write(options.merge(:filename => temp))
+        if ok && File.exist?(temp) && file_size(temp).positive?
+          return publish(temp, path)
+        end
+        FacadeExport.log("Временный файл не создан, пишу напрямую: #{File.basename(path)}")
+      end
+      remove_existing(path)
+      ok = do_write(options.merge(:filename => path))
+      unless ok && File.exist?(path)
+        # Одна повторная попытка на случай, если файл ещё занят антивирусом.
+        sleep 0.15
+        remove_existing(path)
+        ok = do_write(options.merge(:filename => path))
+      end
+      ok && File.exist?(path)
+    end
+
+    def image_options
       options = {
-        :filename    => path,
         :width       => @result.image_width,
         :height      => @result.image_height,
         :antialias   => @settings.exp('antialias') ? true : false,
         :transparent => @settings.exp('transparent') ? true : false
       }
       options[:scale_factor] = @settings.exp('line_scale').to_f
+      options
+    end
 
+    # Копируем готовый PNG на место. Копию создаём сами и сразу закрываем
+    # дескриптор — файл в папке пользователя свободен.
+    def publish(temp, path)
       remove_existing(path)
-      ok = do_write(options)
-      unless ok && File.exist?(path)
-        # Файл мог остаться занятым (COM Surrogate/антивирус) — одна повторная
-        # попытка после короткой паузы.
-        sleep 0.15
-        remove_existing(path)
-        ok = do_write(options)
-      end
-      # Ждём, пока SketchUp/Windows полностью отпустят файл,
-      # иначе следующий файл (и Проводник) может получить "COM Surrogate".
-      wait_until_released(path) if ok
+      copy_file(temp, path)
+      ok = File.exist?(path) && file_size(path).positive?
+      cleanup_temp(temp)
       ok
+    rescue StandardError => e
+      FacadeExport.log("Не удалось записать #{File.basename(path)}: #{e.message}")
+      begin
+        copy_file(temp, path)
+        cleanup_temp(temp)
+        true
+      rescue StandardError => inner
+        FacadeExport.log("Повторная запись не удалась: #{inner.message}")
+        false
+      end
+    end
+
+    def copy_file(from, to)
+      File.open(from, 'rb') do |src|
+        File.open(to, 'wb') do |dst|
+          IO.copy_stream(src, dst)
+          begin
+            dst.flush
+            dst.fsync
+          rescue StandardError
+            nil
+          end
+        end
+      end
+    end
+
+    # Путь временного файла (вне папки результата).
+    def temp_file_path(path)
+      dir = temp_dir
+      return nil if dir.nil?
+      @temp_index = (@temp_index || 0) + 1
+      File.join(dir, format('%04d_%s', @temp_index, File.basename(path)))
+    end
+
+    def temp_dir
+      return @temp_dir if defined?(@temp_dir)
+      @temp_dir = begin
+        Dir.mktmpdir('facade_export')
+      rescue StandardError => e
+        FacadeExport.log("Системная временная папка недоступна (#{e.message})")
+        nil
+      end
+      return @temp_dir if @temp_dir
+      # Запасной вариант — служебная папка рядом с результатом.
+      fallback = File.join(@directory.to_s, '.facade_export_tmp')
+      begin
+        FileUtils.mkdir_p(fallback)
+        @temp_dir = fallback
+      rescue StandardError => e
+        FacadeExport.log("Временная папка недоступна (#{e.message})")
+        @temp_dir = nil
+      end
+      @temp_dir
+    end
+
+    def cleanup_temp(path)
+      return if path.nil?
+      3.times do
+        begin
+          File.delete(path) if File.exist?(path)
+        rescue SystemCallError, IOError
+          sleep 0.05
+          next
+        end
+        return true
+      end
+      false
+    end
+
+    def cleanup_temp_dir
+      dir = defined?(@temp_dir) ? @temp_dir : nil
+      return if dir.nil?
+      Dir.glob(File.join(dir, '*')).each { |path| cleanup_temp(path) }
+      Dir.rmdir(dir) if File.directory?(dir)
+    rescue StandardError => e
+      FacadeExport.log("Временная папка не удалена: #{e.message}")
     end
 
     def do_write(options)
@@ -432,7 +612,7 @@ module FacadeExport
     end
 
     def remove_existing(path)
-      return unless File.exist?(path)
+      return true unless File.exist?(path)
       5.times do
         begin
           File.delete(path)
@@ -441,31 +621,6 @@ module FacadeExport
           sleep 0.05
         end
       end
-      false
-    end
-
-    # Ждём, пока Windows/SketchUp полностью отпустят файл: иначе следующий
-    # кадр (или Проводник с COM Surrogate) может получить "файл занят".
-    def wait_until_released(path, timeout = 2.0)
-      deadline = Time.now + timeout
-      loop do
-        begin
-          size = File.size(path)
-          return true if size.positive? && readable_and_unlocked?(path)
-        rescue SystemCallError, IOError
-          nil
-        end
-        return false if Time.now > deadline
-        sleep 0.02
-      end
-    end
-
-    # Пробуем открыть файл на запись: на Windows это сразу покажет,
-    # что дескриптор ещё держит другой процесс.
-    def readable_and_unlocked?(path)
-      File.open(path, 'r+b') { |io| io.read(0) }
-      true
-    rescue SystemCallError, IOError
       false
     end
 
@@ -536,8 +691,9 @@ module FacadeExport
       end
       return [] if path.nil? || path.empty?
 
-      # Скрытие не оборачиваем в операцию: так в истории «Отменить» не
-      # появляется лишний шаг, а видимость всё равно возвращается в ensure.
+      # Всё скрытие идёт внутри служебной операции экспорта, которую в конце
+      # отменяем (см. begin_export_operation), поэтому в истории «Отменить»
+      # не остаётся ни одного шага экспорта.
       saved = []
       path.each_with_index do |instance, index|
         collection = if index.zero?

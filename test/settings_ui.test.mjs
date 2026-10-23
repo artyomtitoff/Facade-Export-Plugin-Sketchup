@@ -28,15 +28,14 @@ const glassDefaults = {
 
 // Настройки «по умолчанию» — как их отдаёт Ruby (Config.default_settings).
 const defaults = {
-  version: 3,
+  version: 4,
   export: {
     width: 9999, height: 0, line_scale: 0.3, margin: 0.02,
-    restore_view: true, show_report: true,
+    restore_view: true, show_report: true, fit_all_facades: false,
     aspect: "4:3", projection: "parallel", sun_for_shading: false,
     use_view_size: false, visible_area: false, antialias: false, transparent: true,
     background: "#FFFFFF",
-    show_sky: false, show_ground: false, hide_guides: true, hide_annotations: true,
-    hide_watermarks: true, show_section_planes: false, last_directory: "",
+    hide_sky: true, hide_ground: true, hide_watermarks: true, last_directory: "",
   },
   maps: [
     {
@@ -105,7 +104,7 @@ const exportTab = q("#tab-export");
 const visibleExport = [...exportTab.querySelectorAll("input, select")]
   .filter((el) => !el.closest("details.adv"));
 const visiblePaths = visibleExport.map((el) => el.getAttribute("data-path"));
-check("Экспорт: видимых полей 7", visibleExport.length === 7, visiblePaths.join(", "));
+check("Экспорт: видимых полей 8", visibleExport.length === 8, visiblePaths.join(", "));
 check("Экспорт: видны ширина/высота/линии/отступ",
   ["export.width", "export.height", "export.line_scale", "export.margin"].every((p) => visiblePaths.includes(p)),
   visiblePaths.join(", "));
@@ -145,13 +144,45 @@ check("Есть флажок «Экспортировать только вид�
 check("Флажок по умолчанию выключен", byPath("export.visible_area")?.checked === false);
 const vaHint = byPath("export.visible_area").closest(".check").textContent;
 check("Подсказка объясняет, что попадёт в PNG",
-  vaHint.includes("ровно то, что видно") && vaHint.includes("повёрнутой на 90°"),
+  vaHint.includes("ровно то, что видно") && /90°/.test(vaHint),
   vaHint.slice(0, 160));
 check("Подсказка: размеры и соотношение — из настроек, а не из окна",
   vaHint.includes("из настроек") && vaHint.includes("а не из окна просмотра"),
   vaHint.slice(0, 200));
 check("Подсказка: перспектива переводится в параллельную проекцию",
-  vaHint.includes("параллельную проекцию"), vaHint.slice(0, 240));
+  /параллельной проекцией/.test(vaHint), vaHint.slice(0, 240));
+const vaHintText = byPath("export.visible_area").closest(".check").querySelector(".hint").textContent;
+check("Подсказка стала короче (до 240 символов)", vaHintText.length < 240, vaHintText.length);
+
+// --- п. 8: подгонка одиночного фасада по всем фасадам
+check("Есть флажок подгонки одиночного фасада", !!byPath("export.fit_all_facades"));
+check("Флажок подгонки по умолчанию выключен", byPath("export.fit_all_facades")?.checked === false);
+check("Подсказка про подгонку объясняет смысл",
+  /по самому большому фасаду/.test(byPath("export.fit_all_facades").closest(".check").textContent),
+  byPath("export.fit_all_facades").closest(".check").textContent);
+
+// --- п. 6: «скрывать небо/землю» вместо «оставлять»
+check("Небо и земля: поля называются «Скрывать небо» и «Скрывать землю»",
+  !!byPath("export.hide_sky") && !!byPath("export.hide_ground") &&
+  !exportTab.textContent.includes("Оставлять небо") &&
+  !exportTab.textContent.includes("Оставлять землю"),
+  exportTab.textContent.slice(0, 40));
+check("Скрывать небо/землю включены по умолчанию",
+  byPath("export.hide_sky")?.checked === true && byPath("export.hide_ground")?.checked === true);
+check("Про «по умолчанию включены» не написано",
+  !byPath("export.hide_sky").closest(".check").textContent.includes("умолчанию") &&
+  !byPath("export.hide_ground").closest(".check").textContent.includes("умолчанию"));
+
+// --- п. 3: строки про «светлее и темнее» на вкладке «Экспорт» больше нет
+check("Строки «светлее и темнее задаются на вкладке каждой карты» нет",
+  !exportTab.textContent.includes("задаются на вкладке каждой карты"));
+
+// --- п. 1: служебная графика не настраивается
+check("Настроек направляющих, осей, размеров и плоскостей сечений нет",
+  !byPath("export.hide_guides") && !byPath("export.hide_annotations") &&
+  !byPath("export.show_section_planes"));
+check("Скрытая геометрия не попадает в кадр — сказано в подсказке",
+  exportTab.textContent.includes("скрытая геометрия в кадр не попадают"));
 
 /* ------------------------------------------------ вкладка карты */
 
@@ -212,8 +243,16 @@ check("Палитра ограждений отрисована",
 
 const css = html.slice(html.indexOf("<style>"), html.indexOf("</style>"));
 const gapMatch = /column-gap:\s*(\d+)px/.exec(css);
-check("Двухколоночная сетка: зазор между столбцами ≥ 32 px",
-  gapMatch !== null && Number(gapMatch[1]) >= 32, gapMatch && gapMatch[0]);
+check("Двухколоночная сетка: зазор между столбцами ≥ 48 px",
+  gapMatch !== null && Number(gapMatch[1]) >= 48, gapMatch && gapMatch[0]);
+check("Между столбцами есть разделительная линия",
+  /\.grid\.split::before/.test(css) && /left:\s*calc\(50% - 0\.5px\)/.test(css));
+check("Двухколоночные блоки используют разделитель",
+  doc.querySelectorAll(".grid.split").length >= 4,
+  doc.querySelectorAll(".grid.split").length);
+check("В левом столбце карты — поле имени, в правом — выпадающий список",
+  byPath("maps.2.title")?.closest(".grid")?.classList.contains("split") === true &&
+  byPath("maps.2.render_mode")?.tagName === "SELECT");
 check("Подвал не сжимается: footer с flex 0 0 auto",
   /footer\s*\{[^}]*flex:\s*0 0 auto/.test(css.replace(/\n/g, " ")));
 check("Прокручивается только содержимое (main с min-height 0)",
@@ -245,6 +284,9 @@ fire(doc.getElementById("btn-save"), "click");
 saved = JSON.parse(calls.save);
 check("Флажок «видимый участок» сохраняется", saved?.export?.visible_area === true,
   saved?.export?.visible_area);
+check("Поля «скрывать небо/землю» сохраняются",
+  saved?.export?.hide_sky === true && saved?.export?.hide_ground === true,
+  `${saved?.export?.hide_sky} / ${saved?.export?.hide_ground}`);
 byPath("export.visible_area").checked = false;
 fire(doc.getElementById("btn-save"), "click");
 saved = JSON.parse(calls.save);

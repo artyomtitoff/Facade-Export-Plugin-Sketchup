@@ -119,6 +119,14 @@ module Geom
       Geom::Transformation.new(@x + other.x, @y + other.y, @z + other.z)
     end
 
+    # Как в SketchUp: 16 чисел (матрица 4×4 по столбцам).
+    def to_a
+      [1.0, 0.0, 0.0, 0.0,
+       0.0, 1.0, 0.0, 0.0,
+       0.0, 0.0, 1.0, 0.0,
+       @x.to_f, @y.to_f, @z.to_f, 1.0]
+    end
+
     def inspect
       format('Transformation(%0.3f, %0.3f, %0.3f)', @x, @y, @z)
     end
@@ -177,10 +185,11 @@ end
 module Sketchup
   # Простейшие сущности модели (для проверки экспорта из открытой группы).
   class Entity
-    attr_accessor :hidden, :bounds
+    attr_accessor :hidden, :bounds, :layer
 
     def initialize
       @hidden = false
+      @layer = nil
     end
 
     def hidden?
@@ -190,6 +199,124 @@ module Sketchup
     def valid?
       true
     end
+  end
+
+  # Ребро: границы строятся по его концам.
+  class Edge < Sketchup::Entity
+    attr_reader :start, :end
+
+    def initialize(start_point, end_point)
+      super()
+      @start = start_point
+      @end = end_point
+    end
+  end
+
+  # Контур грани: список вершин.
+  class Loop
+    attr_reader :vertices
+
+    def initialize(vertices)
+      @vertices = vertices.map do |v|
+        v.is_a?(Sketchup::Vertex) ? v : Sketchup::Vertex.new(v)
+      end
+    end
+  end
+
+  class Vertex
+    attr_reader :position
+
+    def initialize(position)
+      @position = position
+    end
+  end
+
+  # Грань: границы строятся по её вершинам.
+  class Face < Sketchup::Entity
+    attr_reader :loops
+
+    def initialize(vertices)
+      super()
+      @loops = [Sketchup::Loop.new(vertices)]
+    end
+
+    def vertices
+      @loops.first.vertices
+    end
+  end
+
+  # Изображение — видимый объект, но не ребро и не грань.
+  class Image < Sketchup::Entity
+    def initialize(bounds)
+      super()
+      @bounds = bounds
+    end
+  end
+
+  # Метка (слой) и папка меток.
+  class Layer
+    attr_accessor :name, :folder
+
+    def initialize(name = 'Layer0', visible = true)
+      @name = name
+      @visible = visible
+      @folder = nil
+    end
+
+    def visible?
+      @visible
+    end
+
+    def visible=(value)
+      @visible = value
+    end
+  end
+
+  class LayerFolder
+    attr_accessor :name
+
+    def initialize(name = 'Папка', visible = true)
+      @name = name
+      @visible = visible
+    end
+
+    def visible?
+      @visible
+    end
+  end
+
+  # Собирает «коробку» из 12 видимых рёбер — так тесты строят геометрию,
+  # по которой плагин считает габариты.
+  def self.test_box(entities, size_x, size_y, size_z, offset_x = 0.0, offset_y = 0.0, offset_z = 0.0)
+    pts = {}
+    [0.0, size_x].each do |x|
+      [0.0, size_y].each do |y|
+        [0.0, size_z].each do |z|
+          pts[[x, y, z]] = Geom::Point3d.new(offset_x + x, offset_y + y, offset_z + z)
+        end
+      end
+    end
+    edges = []
+    [0.0, size_x].each do |x|
+      [0.0, size_y].each do |y|
+        edges << [pts[[x, y, 0.0]], pts[[x, y, size_z]]]
+      end
+      [0.0, size_z].each do |z|
+        edges << [pts[[x, 0.0, z]], pts[[x, size_y, z]]]
+      end
+    end
+    [0.0, size_y].each do |y|
+      [0.0, size_z].each do |z|
+        edges << [pts[[0.0, y, z]], pts[[size_x, y, z]]]
+      end
+    end
+    created = []
+    edges.each do |a, b|
+      edge = Sketchup::Edge.new(a, b)
+      entities.add(edge)
+      created << edge
+    end
+    created
   end
 
   class Entities
@@ -209,6 +336,11 @@ module Sketchup
 
     def add(entity)
       @list << entity
+      self
+    end
+
+    def clear
+      @list.clear
       self
     end
 
@@ -236,7 +368,8 @@ module Sketchup
 
   class SectionPlane < Sketchup::Entity; end
 
-  class GroupInstance < Sketchup::Entity
+  # Группа/компонент: габариты считаются по содержимому определения.
+  class Group < Sketchup::Entity
     attr_accessor :definition, :transformation
 
     def initialize(definition, transformation = Geom::Transformation.new)
@@ -245,6 +378,9 @@ module Sketchup
       @transformation = transformation
     end
   end
+
+  class GroupInstance < Sketchup::Group; end
+  ComponentInstance = GroupInstance
 end
 
 module Sketchup
@@ -637,6 +773,7 @@ module Sketchup
         Geom::Point3d.new(0, 800, 600), Geom::Point3d.new(1200, 800, 600)
       ]
       @bounds = Geom::BoundingBox.new(house)
+      Sketchup.test_box(@entities, 1200, 800, 600)
       @materials = Sketchup::Materials.new(
         [
           Sketchup::Material.new('Кирпич', Sketchup::Color.new(180, 90, 70)),
@@ -661,17 +798,75 @@ module Sketchup
 
     attr_accessor :active_path, :entities
 
-    def start_operation(_name = nil, _disable_ui = false)
-      @started_operations << _name
+    attr_reader :operations, :aborts, :commits
+
+    # Служебная операция: как в SketchUp, при отмене (abort_operation)
+    # модель возвращается к состоянию на момент start_operation.
+    def start_operation(name = nil, disable_ui = false)
+      @started_operations << name
+      @operations ||= []
+      @operations << { :name => name, :disable_ui => disable_ui }
+      @aborts ||= 0
+      @commits ||= 0
+      @operation_snapshot = operation_snapshot
       true
     end
 
     def commit_operation
+      @commits = (@commits || 0) + 1
+      @operation_snapshot = nil
       true
     end
 
     def abort_operation
+      @aborts = (@aborts || 0) + 1
+      restore_operation_snapshot(@operation_snapshot)
+      @operation_snapshot = nil
       true
+    end
+
+    def operation_snapshot
+      {
+        :materials => @materials.map { |m| [m, m.color.to_a, m.alpha] },
+        :rendering => @rendering_options.to_h,
+        :shadow => @shadow_info.to_h,
+        :hidden => visible_entities.map { |e| [e, e.hidden?] }
+      }
+    end
+
+    def restore_operation_snapshot(snapshot)
+      return if snapshot.nil?
+      snapshot[:materials].each do |mat, color, alpha|
+        mat.color = Sketchup::Color.new(color[0], color[1], color[2], color[3])
+        mat.alpha = alpha
+      end
+      snapshot[:rendering].each { |k, v| @rendering_options[k.to_s] = v }
+      snapshot[:shadow].each do |k, v|
+        next if k == 'SunDirection'
+        @shadow_info[k.to_s] = v
+      end
+      snapshot[:hidden].each { |entity, hidden| entity.hidden = hidden }
+    end
+
+    # Все сущности модели и вложенных определений (для снимка видимости).
+    def visible_entities(list = nil, depth = 0)
+      list ||= []
+      return list if depth > 4
+      @entities.each do |entity|
+        list << entity
+        if entity.respond_to?(:definition) && entity.definition
+          visible_entities_definition(entity.definition, list, depth + 1)
+        end
+      end
+      list
+    end
+
+    def visible_entities_definition(definition, list, depth)
+      definition.entities.each do |entity|
+        list << entity
+        next unless entity.respond_to?(:definition) && entity.definition
+        visible_entities_definition(entity.definition, list, depth + 1)
+      end
     end
 
     def selection

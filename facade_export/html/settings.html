@@ -88,15 +88,29 @@
     color: var(--muted);
     font-weight: 600;
   }
-  /* Два столбца: увеличенный зазор, чтобы рамки полей не соприкасались. */
+  /* Два столбца: широкий зазор плюс разделительная линия посередине —
+     рамка поля из левого столбца (в том числе выпадающего списка) больше
+     не соприкасается с правым столбцом. */
   .grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    column-gap: 44px;
+    column-gap: 56px;
     row-gap: 14px;
+  }
+  .grid.split { position: relative; }
+  .grid.split::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(50% - 0.5px);
+    width: 1px;
+    background: var(--line);
+    pointer-events: none;
   }
   .grid.one { grid-template-columns: minmax(0, 1fr); }
   .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 26px; }
+  .grid.three.split::before { display: none; }
   .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .field label { font-size: 12px; color: #3b4149; }
   .field input[type="number"], .field input[type="text"], .field select {
@@ -107,6 +121,11 @@
     background: #fff;
     color: var(--text);
     width: 100%;
+    /* Поле не может выйти за свой столбец, даже если в нём длинный текст
+       (иначе рамка «выбрать из списка» залезала на правый столбец). */
+    min-width: 0;
+    max-width: 100%;
+    text-overflow: ellipsis;
   }
   .field input:focus, .field select:focus {
     outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(31,111,235,.15);
@@ -301,7 +320,7 @@
     var html = '';
     html += '<section class="tab" id="tab-export">';
 
-    html += '<div class="card"><h2>Кадр (PNG)</h2><div class="grid">';
+    html += '<div class="card"><h2>Кадр (PNG)</h2><div class="grid split">';
     html += numberField('export.width', 'Длина большей стороны, пикс.', 100, 9999, 1,
       'По умолчанию 9999 пикс. — это большая сторона кадра; максимум 9999.');
     html += numberField('export.height', 'Высота, пикс.', 0, 9999, 1,
@@ -316,20 +335,21 @@
     html += checkField('export.restore_view', 'Возвращать вид и стиль после экспорта',
       'Вьюпорт остаётся таким, каким был до нажатия кнопки.');
     html += checkField('export.show_report', 'Показывать отчёт после экспорта');
+    html += checkField('export.fit_all_facades',
+      'При экспорте одного фасада подгонять по самому большому',
+      'Плагин проверяет все четыре стороны объекта и берёт масштаб по самому ' +
+      'большому фасаду — одиночный кадр совпадает по масштабу с полным экспортом.');
     html += checkField('export.visible_area', 'Экспортировать только видимый участок',
-      'Плагин не подгоняет кадр под объект и ничего не масштабирует: в PNG ' +
-      'попадает ровно то, что видно в окне SketchUp — тот же ракурс, тот же зум ' +
-      'и та же композиция. Соотношение сторон и размеры берутся из настроек ' +
-      '(соотношение на вкладке «Расширенные настройки», длинная сторона 9999 px), ' +
-      'а не из окна просмотра. Остальные фасады снимаются той же камерой, ' +
-      'повёрнутой на 90°. Отступ вокруг фасада в этом режиме не применяется, ' +
-      'а перспективный вид сначала переводится в параллельную проекцию.');
+      'В PNG попадает ровно то, что видно в окне, без подгонки под объект. ' +
+      'Размер и соотношение — из настроек, а не из окна просмотра. Остальные ' +
+      'фасады — та же камера, повёрнутая на 90°; перспектива заменяется ' +
+      'параллельной проекцией.');
     html += '<div class="hint">Имена файлов: <code>Префикс_Фасад_Номер_Карта.png</code>. ' +
             'Префикс берётся из имени, которое вы вписали в окне сохранения.</div>';
     html += '</div></div>';
 
     var adv = '';
-    adv += '<div class="card"><h2>Пропорции и проекция</h2><div class="grid">';
+    adv += '<div class="card"><h2>Пропорции и проекция</h2><div class="grid split">';
     adv += selectField('export.aspect', 'Соотношение сторон кадра', ASPECTS,
       'Для высоких объектов кадр автоматически разворачивается: 9999 уходит по вертикали.');
     adv += '<div></div>';
@@ -342,25 +362,22 @@
     adv += '<div class="card"><h2>Тени</h2><div class="grid one">';
     adv += checkField('export.sun_for_shading', 'Использовать солнце для затенения',
       'Соответствует галочке в лотке «Тени». Для карт-фасадов обычно выключено.');
-    adv += '<div class="hint">«Светлее» и «Темнее» задаются на вкладке каждой карты.</div>';
     adv += '</div></div>';
 
-    adv += '<div class="card"><h2>Стиль и фон</h2><div class="grid">';
+    adv += '<div class="card"><h2>Стиль и фон</h2><div class="grid split">';
     adv += textField('export.background', 'Цвет фона (#RRGGBB)', 'По умолчанию белый: #FFFFFF.');
     adv += '<div></div>';
     adv += '</div><div class="grid one" style="margin-top:12px">';
     adv += checkField('export.transparent', 'Прозрачный фон PNG',
       'Прозрачность важнее цвета фона, если оба включены.');
     adv += checkField('export.antialias', 'Сглаживание (antialias)', 'По умолчанию выключено.');
-    adv += checkField('export.show_sky', 'Оставлять небо');
-    adv += checkField('export.show_ground', 'Оставлять землю');
-    adv += checkField('export.hide_guides', 'Скрывать направляющие');
-    adv += checkField('export.hide_annotations', 'Скрывать оси, размеры и тексты');
+    adv += checkField('export.hide_sky', 'Скрывать небо');
+    adv += checkField('export.hide_ground', 'Скрывать землю');
     adv += checkField('export.hide_watermarks', 'Скрывать водяные знаки');
-    adv += checkField('export.show_section_planes', 'Показывать плоскости сечений',
-      'Активные сечения всегда продолжают резать геометрию — здесь скрываются только их рамки.');
     adv += '<div class="hint">Профили, показ глубин, расширение линий, конечные точки, ' +
-           'дрожание, силуэты, задние рёбра и рентген отключаются всегда.</div>';
+           'дрожание, силуэты, задние рёбра и рентген отключаются всегда. ' +
+           'Направляющие, оси, размеры, тексты, плоскости сечений и скрытая ' +
+           'геометрия в кадр не попадают.</div>';
     adv += '</div></div>';
 
     html += '<details class="adv"><summary>Расширенные настройки</summary>' +
@@ -401,7 +418,7 @@
 
     // --- Основное: всё, что нужно каждый день
     html += '<div class="card"><h2>Карта «' + esc(map.title) + '»</h2>';
-    html += '<div class="grid">';
+    html += '<div class="grid split">';
     html += textField(p + 'title', 'Название карты (в имени файла)');
     html += selectField(p + 'render_mode', 'Режим отображения', RENDER_MODES);
     html += '</div>';
@@ -416,7 +433,7 @@
     // --- Настройки теней: только когда включён флажок «Тени»
     html += '<div class="dep" data-dep="shadows">';
     html += '<div class="dep-title">Настройки теней <small>(солнце 45° слева сверху)</small></div>';
-    html += '<div class="grid">';
+    html += '<div class="grid split">';
     html += numberField(p + 'shadow_azimuth', 'Смещение солнца влево, °', 0, 90, 1,
       '45° — солнце слева сверху, тени падают вправо вниз.');
     html += numberField(p + 'shadow_elevation', 'Высота солнца, °', 5, 89, 1,

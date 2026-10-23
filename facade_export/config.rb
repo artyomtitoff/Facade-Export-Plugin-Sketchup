@@ -9,7 +9,7 @@ module FacadeExport
   module Config
     PREF_SECTION = 'FacadeExport'.freeze
     PREF_KEY     = 'settings'.freeze
-    SETTINGS_VERSION = 3
+    SETTINGS_VERSION = 4
 
     # Значения "RenderMode" (SketchUp, "Правка > Грань"):
     # 0 — Каркас, 1 — Скрытые линии, 2 — Затенение, 5 — Монохромный.
@@ -89,6 +89,9 @@ module FacadeExport
         'margin'          => 0.02,      # зазор от края, доля большей стороны
         'restore_view'    => true,      # возвращать вид и стиль после экспорта
         'show_report'     => true,      # показывать отчёт
+        # Анализировать все 4 фасада и при экспорте одного фасада подгонять
+        # кадр по самому большому из них (по умолчанию выключено).
+        'fit_all_facades' => false,
         # Показать ровно то, что видно в окне SketchUp: кадр не подгоняется
         # под габариты объекта, масштаб и композиция берутся с экрана.
         'visible_area'    => false,
@@ -101,14 +104,10 @@ module FacadeExport
         'antialias'       => false,
         'transparent'     => true,
         'background'      => '#FFFFFF',
-        'show_sky'        => false,
-        'show_ground'     => false,
-        'hide_guides'     => true,
-        'hide_annotations'=> true,
+        # Небо и землю на фасадах скрываем: в кадре только объект.
+        'hide_sky'        => true,
+        'hide_ground'     => true,
         'hide_watermarks' => true,
-        # Активные сечения всегда продолжают резать геометрию (DisplaySectionCuts
-        # включается на время экспорта), а сами плоскости не рисуем.
-        'show_section_planes' => false,
         'last_directory'  => ''
       }
     end
@@ -323,10 +322,16 @@ module FacadeExport
       e['aspect']     = Config::DEFAULT_ASPECT unless Config::ASPECTS.key?(e['aspect'].to_s)
       e['projection'] = 'parallel' unless %w[parallel perspective].include?(e['projection'].to_s)
 
-      %w[restore_view show_report sun_for_shading use_view_size antialias
-         transparent show_sky show_ground hide_guides hide_annotations
-         hide_watermarks show_section_planes visible_area].each do |key|
+      migrate_old_keys!(e)
+      %w[restore_view show_report fit_all_facades sun_for_shading use_view_size
+         antialias transparent hide_sky hide_ground hide_watermarks
+         visible_area].each do |key|
         e[key] = truthy(e[key])
+      end
+      # Служебная графика (направляющие, оси, тексты, размеры, плоскости
+      # сечений) не рисуется всегда — отдельных настроек больше нет.
+      %w[hide_guides hide_annotations show_section_planes show_sky show_ground].each do |key|
+        e.delete(key)
       end
       e['background'] = '#FFFFFF' if e['background'].to_s.strip.empty?
 
@@ -362,6 +367,14 @@ module FacadeExport
     end
 
     private
+
+    # Настройки старых версий (до 1.5.0): «Оставлять небо/землю» превратились
+    # в «Скрывать небо/землю». Старые ключи удаляются ниже.
+    def migrate_old_keys!(e)
+      e['hide_sky'] = false if e.key?('show_sky') && truthy(e['show_sky'])
+      e['hide_ground'] = false if e.key?('show_ground') && truthy(e['show_ground'])
+      @data['version'] = Config::SETTINGS_VERSION
+    end
 
     def clamp_int(value, min, max, fallback)
       v = Integer(value)

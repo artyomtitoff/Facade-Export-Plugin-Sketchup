@@ -114,7 +114,7 @@ check('Имя файла: префикс из окна сохранения со
       FacadeExport::Exporter.file_name('Дом_Иванова', 1, 'Текстура') == 'Дом_Иванова_Фасад_1_Текстура.png')
 
 settings = fresh_settings
-check('Версия настроек 3', settings.data['version'] == 3, settings.data['version'])
+check('Версия настроек 4', settings.data['version'] == 4, settings.data['version'])
 check('Ширина по умолчанию 9999', settings.exp('width') == 9999)
 check('Высота автоматическая (0)', settings.exp('height') == 0)
 check('Соотношение сторон 4:3', settings.exp('aspect') == '4:3', settings.exp('aspect').inspect)
@@ -125,7 +125,26 @@ check('Прозрачный фон включён', settings.exp('transparent') 
 check('Параллельная проекция включена по умолчанию',
       settings.parallel_projection? == true && settings.exp('projection') == 'parallel')
 check('Солнце для затенения выключено', settings.exp('sun_for_shading') == false)
-check('Плоскости сечений не рисуются', settings.exp('show_section_planes') == false)
+check('Небо и земля скрыты по умолчанию',
+      settings.exp('hide_sky') == true && settings.exp('hide_ground') == true,
+      [settings.exp('hide_sky'), settings.exp('hide_ground')].inspect)
+check('Настроек «оставлять небо/землю» больше нет',
+      !settings.export.key?('show_sky') && !settings.export.key?('show_ground'))
+check('Служебные настройки графики убраны',
+      !settings.export.key?('hide_guides') && !settings.export.key?('hide_annotations') &&
+      !settings.export.key?('show_section_planes'))
+check('Подгонка одиночного фасада по всем включена по умолчанию? — нет',
+      settings.exp('fit_all_facades') == false, settings.exp('fit_all_facades').inspect)
+
+# Перенос старых настроек: «Оставлять небо» -> «Скрывать небо» = false
+old_settings = FacadeExport::Settings.new(
+  'version' => 3,
+  'export' => { 'show_sky' => true, 'show_ground' => false }
+)
+check('Старые настройки: включённое небо сохраняется',
+      old_settings.exp('hide_sky') == false && old_settings.exp('hide_ground') == true,
+      [old_settings.exp('hide_sky'), old_settings.exp('hide_ground')].inspect)
+check('Старые настройки: версия обновлена', old_settings.data['version'] == 4)
 check('Возврат вида включён', settings.exp('restore_view') == true)
 check('Отчёт включён', settings.exp('show_report') == true)
 check('Четыре стандартные карты', settings.maps.length == 4)
@@ -263,30 +282,86 @@ check('Камера отодвинута от модели', cams[0].eye.y < -10
 
 # Скрытая геометрия не должна растягивать кадр
 model_hidden = new_model
-house_entity = Sketchup::Entity.new
-house_entity.bounds = box_points(1200, 800, 600)
-far_away = Sketchup::Entity.new
-far_away.bounds = box_points(100, 100, 100, 50_000, 0, 0)
-far_away.hidden = true
-model_hidden.entities.add(house_entity)
-model_hidden.entities.add(far_away)
+far_away = Sketchup.test_box(model_hidden.entities, 100, 100, 100, 50_000, 0, 0)
+far_away.each { |edge| edge.hidden = true }
 bounds_visible, scope_visible = FacadeExport::Framing.content_bounds(model_hidden)
 check('Скрытая геометрия не растягивает кадр', scope_visible == :model &&
       (bounds_visible.max.x - 1200).abs < 1e-6 && (bounds_visible.min.x).abs < 1e-6,
       [bounds_visible.min.to_a, bounds_visible.max.to_a].inspect)
-# Направляющие и аннотации не растягивают кадр
+
+# Направляющие, сечения, размеры и тексты не растягивают кадр
 guide = Sketchup::ConstructionLine.new
 guide.bounds = box_points(1, 1, 1, -20_000, -20_000, 0)
 text = Sketchup::Text.new
 text.bounds = box_points(1, 1, 1, 30_000, 30_000, 0)
-model_hidden.entities.add(guide)
-model_hidden.entities.add(text)
+section = Sketchup::SectionPlane.new
+section.bounds = box_points(1, 1, 1, 0, 0, 40_000)
+dimension = Sketchup::Dimension.new
+dimension.bounds = box_points(1, 1, 1, -30_000, 0, 0)
+[guide, text, section, dimension].each { |e| model_hidden.entities.add(e) }
 bounds_no_guides, _scope = FacadeExport::Framing.content_bounds(model_hidden)
-check('Направляющие и тексты не растягивают кадр',
+check('Направляющие, сечения, размеры и тексты не растягивают кадр',
       (bounds_no_guides.max.x - 1200).abs < 1e-6 && (bounds_no_guides.min.x).abs < 1e-6,
       [bounds_no_guides.min.to_a, bounds_no_guides.max.to_a].inspect)
 
-far_away.hidden = false
+# Геометрия со скрытой метки (тега) в кадр не входит
+hidden_layer = Sketchup::Layer.new('Скрытая метка', false)
+far_layer_edges = Sketchup.test_box(model_hidden.entities, 200, 200, 200, 0, 30_000, 0)
+far_layer_edges.each { |edge| edge.layer = hidden_layer }
+bounds_layer, _scope = FacadeExport::Framing.content_bounds(model_hidden)
+check('Геометрия со скрытой метки игнорируется',
+      (bounds_layer.max.y - 800).abs < 1e-6,
+      [bounds_layer.min.to_a, bounds_layer.max.to_a].inspect)
+
+# Метка в скрытой папке меток тоже не учитывается
+folder = Sketchup::LayerFolder.new('Скрытая папка', false)
+folder_layer = Sketchup::Layer.new('В папке')
+folder_layer.folder = folder
+folder_edges = Sketchup.test_box(model_hidden.entities, 300, 300, 300, 0, 0, 20_000)
+folder_edges.each { |edge| edge.layer = folder_layer }
+bounds_folder, _scope = FacadeExport::Framing.content_bounds(model_hidden)
+check('Метки в скрытой папке игнорируются',
+      (bounds_folder.max.z - 600).abs < 1e-6,
+      [bounds_folder.min.to_a, bounds_folder.max.to_a].inspect)
+
+# Только грани без рёбер тоже дают габариты
+model_faces = Sketchup::Model.new
+model_faces.entities.clear
+model_faces.entities.add(Sketchup::Face.new([
+  Geom::Point3d.new(0, 0, 0), Geom::Point3d.new(900, 0, 0),
+  Geom::Point3d.new(900, 0, 400), Geom::Point3d.new(0, 0, 400)
+]))
+bounds_faces, _scope = FacadeExport::Framing.content_bounds(model_faces)
+check('Габариты по видимым граням (900×400)',
+      (bounds_faces.max.x - 900).abs < 1e-6 && (bounds_faces.max.z - 400).abs < 1e-6,
+      [bounds_faces.min.to_a, bounds_faces.max.to_a].inspect)
+
+# Скрытые грани и рёбра не в счёт
+model_faces.entities.to_a.each { |e| e.hidden = true }
+hidden_only = begin
+  FacadeExport::Framing.content_bounds(model_faces)
+  nil
+rescue FacadeExport::ExportError => e
+  e.message
+end
+check('Всё скрыто — понятная ошибка', hidden_only.to_s.include?('нет видимых линий и граней'),
+      hidden_only.inspect)
+
+# Внутри компонента скрытая геометрия тоже не растягивает кадр
+model_comp = new_model
+model_comp.entities.clear
+inner = Sketchup::Definition.new(box_points(500, 500, 300))
+Sketchup.test_box(inner.entities, 500, 500, 300)
+far_inner = Sketchup.test_box(inner.entities, 50, 50, 50, 0, 10_000, 0)
+far_inner.each { |edge| edge.hidden = true }
+instance = Sketchup::ComponentInstance.new(inner, Geom::Transformation.new(0, 0, 0))
+model_comp.entities.add(instance)
+bounds_comp, _scope = FacadeExport::Framing.content_bounds(model_comp)
+check('Скрытое внутри компонента не растягивает кадр',
+      (bounds_comp.max.y - 500).abs < 1e-6,
+      [bounds_comp.min.to_a, bounds_comp.max.to_a].inspect)
+
+far_away.each { |edge| edge.hidden = false }
 bounds_all, _scope = FacadeExport::Framing.content_bounds(model_hidden)
 check('Видимая геометрия учитывается целиком', (bounds_all.max.x - 50_100).abs < 1e-6,
       bounds_all.max.to_a.inspect)
@@ -326,6 +401,7 @@ check('Без открытой группы кадрируется вся мод
 
 group_bounds = box_points(400, 300, 200)
 definition = Sketchup::Definition.new(group_bounds)
+Sketchup.test_box(definition.entities, 400, 300, 200)
 instance = Sketchup::GroupInstance.new(definition, Geom::Transformation.new(1000, 1000, 0))
 model.active_path = [instance]
 bounds_ctx, scope_ctx = FacadeExport::Framing.content_bounds(model)
@@ -930,6 +1006,7 @@ fresh_settings
 sibling_a = Sketchup::Entity.new
 sibling_b = Sketchup::Entity.new
 definition = Sketchup::Definition.new(box_points(400, 300, 200))
+Sketchup.test_box(definition.entities, 400, 300, 200)
 instance = Sketchup::GroupInstance.new(definition, Geom::Transformation.new(1000, 1000, 0))
 model.entities.add(sibling_a)
 model.entities.add(sibling_b)
@@ -943,10 +1020,10 @@ check('Ошибок нет', result.errors.empty?, result.errors.inspect)
 check('Кадрируется только открытая группа', result.scope == :context, result.scope)
 check('Файлов 16', result.files.length == 16, result.files.length)
 check('Окружение скрыто на время экспорта',
-      view.writes.all? { |w| w[:hidden] == [true, true, false] },
+      view.writes.all? { |w| w[:hidden].count(false) == 1 },
       view.writes.map { |w| w[:hidden] }.uniq.inspect)
 check('Окружение возвращено после экспорта',
-      model.entities.map { |e| e.hidden? } == [false, false, false],
+      model.entities.none? { |e| e.hidden? },
       model.entities.map { |e| e.hidden? }.inspect)
 check('Кадр по группе: 4:3 (9999×7499)',
       view.writes.all? { |w| w[:width] == 9999 && w[:height] == 7499 })
@@ -1031,18 +1108,26 @@ check('Тексты и размеры выключены',
       w0[:rendering]['DisplayText'] == false && w0[:rendering]['DisplayDims'] == false)
 check('Оси компонентов выключены', w0[:rendering]['DisplayInstanceAxes'] == false)
 
+check('Плоскости сечений не рисуются', w0[:rendering]['DisplaySectionPlanes'] == false)
+check('Направляющие скрыты всегда', w0[:rendering]['HideConstructionGeometry'] == true)
+check('Небо и земля скрыты по умолчанию',
+      w0[:rendering]['DrawSky'] == false && w0[:rendering]['DrawGround'] == false,
+      [w0[:rendering]['DrawSky'], w0[:rendering]['DrawGround']].inspect)
+
 clean_out
 model = new_model
 view = model.active_view
 fresh_settings
-FacadeExport.settings.set_export('hide_annotations', false)
+FacadeExport.settings.set_export('hide_sky', false)
+FacadeExport.settings.set_export('hide_ground', false)
 FacadeExport::Exporter.new(
   :model => model, :view => view, :settings => FacadeExport.settings,
   :directory => OUT_ROOT, :base_name => 'Тест', :facade_count => 1
 ).run
-check('Настройка "скрывать аннотации" отключается',
-      view.writes.first[:rendering]['DisplaySketchAxes'] == true,
-      view.writes.first[:rendering]['DisplaySketchAxes'].inspect)
+check('Небо и землю можно вернуть',
+      view.writes.first[:rendering]['DrawSky'] == true &&
+      view.writes.first[:rendering]['DrawGround'] == true,
+      [view.writes.first[:rendering]['DrawSky'], view.writes.first[:rendering]['DrawGround']].inspect)
 
 # --------------------------------------------- 12. нажатие кнопок (main.rb)
 
@@ -1128,6 +1213,186 @@ UI.savepanel_result = File.join(OUT_ROOT, 'x.png')
 FacadeExport.export_all_facades
 check('Все карты отключены: сообщение пользователю',
       UI.messages.any? { |m| m.include?('Все карты отключены') }, UI.messages.inspect)
+
+# --------------------------------------- 13. журнал «Отменить» после экспорта
+
+section 'Экспорт не оставляет следов в журнале «Отменить»'
+clean_out
+model = new_model
+view = model.active_view
+fresh_settings
+materials_before = model.materials.map { |m| [m.name, m.color.to_a, m.alpha] }
+FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Отмена', :facade_count => 4
+).run
+check('Служебная операция открыта и отменена',
+      model.operations.length == 1 && model.aborts == 1 && model.commits.zero?,
+      [model.operations.length, model.aborts, model.commits].inspect)
+check('Операция открыта без обновления интерфейса',
+      model.operations.first[:disable_ui] == true, model.operations.first.inspect)
+check('Материалы после экспорта такие же, как до него',
+      model.materials.map { |m| [m.name, m.color.to_a, m.alpha] } == materials_before,
+      model.materials.map { |m| [m.name, m.alpha] }.inspect)
+check('Стиль после экспорта восстановлен',
+      model.rendering_options['DrawSky'] == true && model.rendering_options['RenderMode'] == 2,
+      model.rendering_options.to_h.inspect)
+
+# ------------------------------- 14. одиночный фасад с подгонкой по всем фасадам
+
+section 'Одиночный фасад: подгонка по самому большому фасаду'
+clean_out
+model = new_model
+model.entities.clear
+Sketchup.test_box(model.entities, 600, 3000, 500)
+view = model.active_view
+fresh_settings
+FacadeExport.settings.set_export('fit_all_facades', false)
+FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Один', :facade_count => 1
+).run
+height_off = view.writes.first[:camera].height
+check('Без подгонки масштаб по текущему фасаду', view.writes.length == 4,
+      view.writes.length)
+
+clean_out
+view.writes.clear
+FacadeExport.settings.set_export('fit_all_facades', true)
+result_one = FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Один', :facade_count => 1
+).run
+height_on = view.writes.first[:camera].height
+check('С подгонкой кадр больше по самому большому фасаду',
+      height_on > height_off * 4.0,
+      [height_off, height_on].inspect)
+check('С подгонкой всё равно один фасад', result_one.files.length == 4,
+      result_one.files.length)
+height_all = nil
+clean_out
+view.writes.clear
+result_all = FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Все', :facade_count => 4
+).run
+height_all = view.writes.first[:camera].height
+check('Масштаб одиночного кадра совпадает с полным экспортом',
+      (height_on - height_all).abs < 1e-6, [height_on, height_all].inspect)
+check('Полный экспорт не изменился (16 файлов)', result_all.files.length == 16,
+      result_all.files.length)
+
+# ------------------------------------- 15. файлы готовы к удалению (Windows)
+
+section 'Файлы результата свободны (COM Surrogate)'
+paths = result_all.files
+check('Файлы лежат в папке результата',
+      paths.all? { |f| File.dirname(f) == OUT_ROOT }, paths.first)
+check('Файлы не пустые', paths.all? { |f| File.size(f).positive? }, paths.first)
+check('PNG-подпись на месте',
+      File.binread(paths.first, 8) == "\x89PNG\r\n\x1a\n".b,
+      File.binread(paths.first, 8).inspect)
+check('Временных файлов в папке не осталось',
+      Dir.entries(OUT_ROOT).none? { |f| f.include?('.part') || f == '.facade_export_tmp' },
+      Dir.entries(OUT_ROOT).inspect)
+check('Пишем во временный файл, а не сразу в папку результата',
+      view.writes.first[:path] != paths.first,
+      [view.writes.first[:path], paths.first].inspect)
+
+# ------------------------------ 16. карта окон не ищет окна, которых нет
+
+section 'Карта окон: стекло ищется один раз'
+model_plain = new_model
+model_plain.materials = Sketchup::Materials.new(
+  [Sketchup::Material.new('Кирпич', Sketchup::Color.new(180, 90, 70))]
+)
+view_plain = model_plain.active_view
+fresh_settings
+plain_exporter = FacadeExport::Exporter.new(
+  :model => model_plain, :view => view_plain, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Без стекла', :facade_count => 1
+)
+check('Стекла в модели нет — список пуст', plain_exporter.send(:glass_entries).empty?,
+      plain_exporter.send(:glass_entries).inspect)
+windows_job = FacadeExport::Exporter.output_jobs(FacadeExport.settings)
+                             .find { |j| j.map['kind'] == 'windows' }
+check('Карта окон без стекла ничего не перекрашивает',
+      plain_exporter.send(:glass_needed?, windows_job) == false)
+clean_out
+plain_result = plain_exporter.run
+check('Экспорт без стекла проходит', plain_result.errors.empty?, plain_result.errors.inspect)
+
+model_glass = new_model
+view_glass = model_glass.active_view
+glass_exporter = FacadeExport::Exporter.new(
+  :model => model_glass, :view => view_glass, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Стекло', :facade_count => 1
+)
+entries = glass_exporter.send(:glass_entries)
+check('Стеклянные материалы найдены', entries.length == 3,
+      entries.map { |e| [e.material.name, e.type] }.inspect)
+check('Типы стекла определены верно',
+      entries.map(&:type).sort == %w[main railing tinted],
+      entries.map(&:type).inspect)
+check('Список стекла кэшируется',
+      glass_exporter.send(:glass_entries).equal?(entries))
+check('Раздельная карта: нет своего типа — ничего не делает',
+      glass_exporter.send(:glass_needed?,
+                          FacadeExport::Exporter::Job.new(FacadeExport.settings.map('windows'), 'tinted', 'x')) == true)
+check('Скрытие ограждений при наличии стекла включается',
+      glass_exporter.send(:glass_needed?,
+                          FacadeExport::Exporter::Job.new(FacadeExport.settings.map('texture'), 'hide_railings', 'x')) == true)
+check('Ограждения без стекла не трогаются',
+      plain_exporter.send(:glass_needed?,
+                          FacadeExport::Exporter::Job.new(FacadeExport.settings.map('texture'), 'hide_railings', 'x')) == false)
+
+# ------------------------- 17. порядок работы: карта → фасады (скорость)
+
+section 'Порядок работы: стиль и стекло — один раз на карту'
+module CountGlassApplies
+  def apply
+    $glass_applies = ($glass_applies || 0) + 1
+    super
+  end
+end
+FacadeExport::GlassRecolor.prepend(CountGlassApplies)
+
+clean_out
+model = new_model
+view = model.active_view
+fresh_settings
+$glass_applies = 0
+FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Порядок', :facade_count => 4
+).run
+check('Стекло перекрашивается один раз на карту, а не на фасад',
+      $glass_applies == 4, $glass_applies)
+check('Сначала снимаются все фасады одной карты',
+      view.writes.first(4).all? { |w| w[:path].end_with?('_Текстура.png') },
+      view.writes.first(4).map { |w| File.basename(w[:path]) }.inspect)
+check('Номер фасада идёт по порядку внутри карты',
+      view.writes.first(4).map { |w| w[:path][/Фасад_(\d)/, 1].to_i } == [1, 2, 3, 4],
+      view.writes.first(4).map { |w| w[:path][/Фасад_(\d)/, 1] }.inspect)
+check('Тени ставятся для каждого фасада отдельно',
+      view.writes.select { |w| w[:path].end_with?('_Тени.png') }
+                 .map { |w| w[:shadow]['SunDirection'].to_a.map { |v| v.round(3) } }.uniq.length == 4,
+      view.writes.select { |w| w[:path].end_with?('_Тени.png') }
+                 .map { |w| w[:shadow]['SunDirection'].to_a.map { |v| v.round(3) } }.inspect)
+
+clean_out
+model = new_model
+model.materials = Sketchup::Materials.new(
+  [Sketchup::Material.new('Кирпич', Sketchup::Color.new(180, 90, 70))]
+)
+view = model.active_view
+fresh_settings
+$glass_applies = 0
+FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Пусто', :facade_count => 4
+).run
+check('Без стекла перекраска не запускается ни разу', $glass_applies.zero?, $glass_applies)
 
 # ------------------------------------------------------------------ итог
 
