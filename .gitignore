@@ -1,0 +1,11 @@
+# зависимости тестов (Ruby-WASM)
+node_modules/
+package-lock.json
+
+# результаты тестового экспорта
+tmp_test_out/
+
+# системный мусор
+.DS_Store
+Thumbs.db
+*.log
