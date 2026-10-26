@@ -736,7 +736,7 @@ section 'Полный экспорт всех фасадов'
 clean_out
 model = new_model
 view = model.active_view
-# Пользователь выключил сечения в стиле — плагин обязан включить их на экспорте.
+# Пользователь выключил разрезы в стиле — плагин обязан сохранить это.
 model.rendering_options['DisplaySectionCuts'] = false
 model.rendering_options['DisplaySectionPlanes'] = true
 initial_rendering = model.rendering_options.to_h.dup
@@ -775,8 +775,9 @@ check('Кадр 4:3: высота 7499',
 check('Сглаживание выключено', writes.all? { |w| w[:antialias] == false })
 check('Прозрачный фон включён', writes.all? { |w| w[:transparent] == true })
 check('Множитель линий 0.3', writes.all? { |w| (w[:scale_factor] - 0.3).abs < 1e-9 })
-check('Сечения продолжают резать геометрию (DisplaySectionCuts = true)',
-      writes.all? { |w| w[:rendering]['DisplaySectionCuts'] == true })
+check('Разрезы, выключенные пользователем, не включаются на экспорте',
+      writes.all? { |w| w[:rendering]['DisplaySectionCuts'] == false },
+      writes.map { |w| w[:rendering]['DisplaySectionCuts'] }.uniq.inspect)
 check('Рамки плоскостей сечений скрыты (DisplaySectionPlanes = false)',
       writes.all? { |w| w[:rendering]['DisplaySectionPlanes'] == false })
 
@@ -1500,6 +1501,100 @@ model = new_model
 FacadeExport.export_all_facades
 check('Отмена окна сохранения вообще не обходит модель', $bounds_calls.zero?, $bounds_calls)
 UI.savepanel_result = nil
+
+# ------------------------------------------- 20. сечения: как у пользователя
+
+section 'Сечения: выключенные разрезы не режут модель'
+
+def export_once(model, base = 'Сечения')
+  clean_out
+  FacadeExport.settings = FacadeExport::Settings.new
+  view = model.active_view
+  FacadeExport::Exporter.new(
+    :model => model, :view => view, :settings => FacadeExport.settings,
+    :directory => OUT_ROOT, :base_name => base, :facade_count => 1
+  ).run
+  view
+end
+
+# 1. Плоскостей нет вовсе — разрезы выключаем принудительно
+model = new_model
+model.entities.clear
+Sketchup.test_box(model.entities, 1200, 800, 600)
+model.rendering_options['DisplaySectionCuts'] = true
+view = export_once(model)
+check('Нет плоскостей сечения — разрезы выключены',
+      view.writes.all? { |w| w[:rendering]['DisplaySectionCuts'] == false },
+      view.writes.map { |w| w[:rendering]['DisplaySectionCuts'] }.uniq.inspect)
+check('Нет плоскостей сечения — модель целая (проверка через стиль)',
+      view.writes.first[:rendering]['DisplaySectionCuts'] == false)
+
+# 2. Плоскость есть, но она неактивна — тоже не режем
+model = new_model
+model.entities.clear
+Sketchup.test_box(model.entities, 1200, 800, 600)
+model.entities.add(Sketchup::SectionPlane.new(false))
+model.rendering_options['DisplaySectionCuts'] = true
+view = export_once(model)
+check('Неактивная плоскость — разрезы выключены',
+      view.writes.all? { |w| w[:rendering]['DisplaySectionCuts'] == false },
+      view.writes.map { |w| w[:rendering]['DisplaySectionCuts'] }.uniq.inspect)
+
+# 3. Активная плоскость + разрезы включены — режем, как на экране
+model = new_model
+model.entities.clear
+Sketchup.test_box(model.entities, 1200, 800, 600)
+model.entities.add(Sketchup::SectionPlane.new(true))
+model.rendering_options['DisplaySectionCuts'] = true
+view = export_once(model)
+check('Активная плоскость и разрезы включены — режем',
+      view.writes.all? { |w| w[:rendering]['DisplaySectionCuts'] == true },
+      view.writes.map { |w| w[:rendering]['DisplaySectionCuts'] }.uniq.inspect)
+check('Рамки плоскостей всё равно не рисуются',
+      view.writes.all? { |w| w[:rendering]['DisplaySectionPlanes'] == false })
+check('После экспорта разрезы пользователя восстановлены',
+      model.rendering_options['DisplaySectionCuts'] == true)
+
+# 4. Активная плоскость, но пользователь выключил разрезы — не режем
+model = new_model
+model.entities.clear
+Sketchup.test_box(model.entities, 1200, 800, 600)
+model.entities.add(Sketchup::SectionPlane.new(true))
+model.rendering_options['DisplaySectionCuts'] = false
+view = export_once(model)
+check('Активная плоскость, но разрезы выключены — не режем',
+      view.writes.all? { |w| w[:rendering]['DisplaySectionCuts'] == false },
+      view.writes.map { |w| w[:rendering]['DisplaySectionCuts'] }.uniq.inspect)
+check('После экспорта выключенные разрезы остались выключенными',
+      model.rendering_options['DisplaySectionCuts'] == false)
+
+# 5. Активная плоскость внутри группы — тоже учитывается
+model = new_model
+model.entities.clear
+Sketchup.test_box(model.entities, 1200, 800, 600)
+definition = Sketchup::Definition.new(box_points(400, 300, 200))
+Sketchup.test_box(definition.entities, 400, 300, 200)
+definition.entities.add(Sketchup::SectionPlane.new(true))
+model.entities.add(Sketchup::GroupInstance.new(definition, Geom::Transformation.new(0, 0, 0)))
+model.rendering_options['DisplaySectionCuts'] = true
+view = export_once(model)
+check('Плоскость внутри группы учитывается',
+      view.writes.all? { |w| w[:rendering]['DisplaySectionCuts'] == true },
+      view.writes.map { |w| w[:rendering]['DisplaySectionCuts'] }.uniq.inspect)
+
+# 6. Плоскость внутри группы, но неактивна — не режем
+model = new_model
+model.entities.clear
+Sketchup.test_box(model.entities, 1200, 800, 600)
+definition = Sketchup::Definition.new(box_points(400, 300, 200))
+Sketchup.test_box(definition.entities, 400, 300, 200)
+definition.entities.add(Sketchup::SectionPlane.new(false))
+model.entities.add(Sketchup::GroupInstance.new(definition, Geom::Transformation.new(0, 0, 0)))
+model.rendering_options['DisplaySectionCuts'] = true
+view = export_once(model)
+check('Неактивная плоскость внутри группы не режет',
+      view.writes.all? { |w| w[:rendering]['DisplaySectionCuts'] == false },
+      view.writes.map { |w| w[:rendering]['DisplaySectionCuts'] }.uniq.inspect)
 
 # ------------------------------------------------------------------ итог
 

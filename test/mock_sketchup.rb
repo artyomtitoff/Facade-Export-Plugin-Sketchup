@@ -376,7 +376,20 @@ module Sketchup
 
   class Dimension < Sketchup::Entity; end
 
-  class SectionPlane < Sketchup::Entity; end
+  class SectionPlane < Sketchup::Entity
+    def initialize(active = true)
+      super()
+      @active = active
+    end
+
+    def active?
+      @active
+    end
+
+    def active=(value)
+      @active = value
+    end
+  end
 
   # Группа/компонент: габариты считаются по содержимому определения.
   class Group < Sketchup::Entity

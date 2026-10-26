@@ -112,6 +112,7 @@ module FacadeExport
       @scope = nil
       @glass_entries = nil
       @glass_only_entries = nil
+      @active_section_planes = nil
     end
 
     def run
@@ -119,6 +120,7 @@ module FacadeExport
       @scope = nil
       @glass_entries = nil
       @glass_only_entries = nil
+      @active_section_planes = nil
       validate!
       started = Time.now
       state = SceneState.new(@model, @view)
@@ -338,14 +340,73 @@ module FacadeExport
         'DrawBackEdges' => false,
         'ModelTransparency' => false,
 
-        # Активные сечения продолжают резать геометрию: в SketchUp выключение
-        # "Section Cuts" делает модель снова целой, поэтому этот параметр всегда
-        # включён. Плоскости сечений (их рамки) по умолчанию не рисуем.
-        'DisplaySectionCuts'   => true,
+        # Сечения: ровно то, что видит пользователь (см. section_cuts?).
+        # Если разрезов в модели нет или они выключены — геометрия не режется.
+        # Плоскости сечений (их рамки) не рисуем никогда: это только рамка,
+        # на сам разрез она не влияет.
+        'DisplaySectionCuts'   => section_cuts?(style),
         'DisplaySectionPlanes' => false
       }
       options['DisplayLineStyles'] = false if style.supported?('DisplayLineStyles')
       style.apply(options)
+    end
+
+    # Нужно ли резать геометрию сечениями — повторяем то, что видит пользователь.
+    #
+    #   1. В модели нет активных плоскостей сечения -> разрезов нет:
+    #      иначе плагин включает разрезы и «обрезает» целую на вид модель.
+    #   2. Активные плоскости есть, но у пользователя разрезы выключены
+    #      (Styles / DisplaySectionCuts = false) -> тоже не режем.
+    #   3. Активные плоскости есть и разрезы включены -> режем, как на экране.
+    #
+    # Плоскости, лежащие внутри групп и компонентов, тоже учитываются.
+    def section_cuts?(style)
+      return false unless active_section_planes?
+      current = style.get('DisplaySectionCuts')
+      return true if current.nil? # старые версии SketchUp: ключа может не быть
+      current == true || current.to_s == 'true'
+    rescue StandardError => e
+      FacadeExport.log("Сечения: состояние не прочитано (#{e.message})")
+      false
+    end
+
+    # Есть ли в модели хотя бы одна активная плоскость сечения.
+    # Плоскости внутри определений тоже считаются активными.
+    def active_section_planes?
+      return @active_section_planes unless @active_section_planes.nil?
+      @section_seen = {}
+      @active_section_planes = sections_in(@model.entities, 0)
+    end
+
+    MAX_SECTION_DEPTH = 32
+
+    def sections_in(entities, depth)
+      return false if entities.nil? || depth > MAX_SECTION_DEPTH
+      entities.each do |entity|
+        if entity.is_a?(Sketchup::SectionPlane)
+          return true if section_active?(entity)
+          next
+        end
+        next unless entity.respond_to?(:definition)
+        definition = begin
+          entity.definition
+        rescue StandardError
+          nil
+        end
+        next if definition.nil?
+        next if @section_seen[definition.object_id]
+        @section_seen[definition.object_id] = true
+        return true if sections_in(definition.entities, depth + 1)
+      end
+      false
+    end
+
+    # Плоскость активна (SketchUp 2014+). Если метод недоступен — считаем активной.
+    def section_active?(plane)
+      return true unless plane.respond_to?(:active?)
+      plane.active? != false
+    rescue StandardError
+      true
     end
 
     # Шаг 3 задания: стиль конкретной карты.
