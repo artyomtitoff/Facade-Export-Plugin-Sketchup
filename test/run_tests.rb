@@ -55,6 +55,13 @@ def section(title)
   puts "\n== #{title} =="
 end
 
+# Размер готового файла по заголовку заглушки.
+def png_size(path)
+  header = File.binread(path, 64).to_s
+  match = header.match(/MOCK-IMAGE (\d+)x(\d+)/)
+  match ? [match[1].to_i, match[2].to_i] : nil
+end
+
 def new_model
   model = Sketchup::Model.new
   Sketchup.active_model = model
@@ -114,13 +121,13 @@ check('Имя файла: префикс из окна сохранения со
       FacadeExport::Exporter.file_name('Дом_Иванова', 1, 'Текстура') == 'Дом_Иванова_Фасад_1_Текстура.png')
 
 settings = fresh_settings
-check('Версия настроек 6', settings.data['version'] == 6, settings.data['version'])
+check('Версия настроек 7', settings.data['version'] == 7, settings.data['version'])
 check('Ширина по умолчанию 9999', settings.exp('width') == 9999)
 check('Высота автоматическая (0)', settings.exp('height') == 0)
 check('Пропорции по умолчанию жёсткие — 4:3',
       settings.exp('aspect') == '4:3', settings.exp('aspect').inspect)
 check('В списке пропорций нет «по фасаду»',
-      FacadeExport::Config.aspect_options.map(&:first) == %w[4:3 3:2 16:9 2:1 3:1 1:1],
+      FacadeExport::Config.aspect_options.map(&:first) == %w[4:3 3:2 16:9 1:2 1:1],
       FacadeExport::Config.aspect_options.inspect)
 check('Отбеливание текстур на карте окон включено по умолчанию',
       settings.exp('whiten_textures') == true, settings.exp('whiten_textures').inspect)
@@ -150,7 +157,7 @@ old_settings = FacadeExport::Settings.new(
 check('Старые настройки: включённое небо сохраняется',
       old_settings.exp('hide_sky') == false && old_settings.exp('hide_ground') == true,
       [old_settings.exp('hide_sky'), old_settings.exp('hide_ground')].inspect)
-check('Старые настройки: версия обновлена', old_settings.data['version'] == 6)
+check('Старые настройки: версия обновлена', old_settings.data['version'] == 7)
 # В 1.5.3 пропорции были «auto» — такие настройки возвращаются к 4:3.
 legacy = FacadeExport::Settings.new('version' => 5, 'export' => { 'aspect' => 'auto' })
 check('Старые настройки: «auto» -> 4:3', legacy.exp('aspect') == '4:3',
@@ -227,17 +234,23 @@ settings.replace!('export' => { 'aspect' => 'нет такого', 'projection' 
 check('Неизвестное соотношение -> 4:3', settings.exp('aspect') == '4:3')
 settings.replace!('export' => { 'aspect' => '4:3' })
 check('4:3 выбирается вручную', settings.exp('aspect') == '4:3')
-check('Есть широкие соотношения 2:1 и 3:1',
-      FacadeExport::Config::ASPECTS.key?('2:1') && FacadeExport::Config::ASPECTS.key?('3:1'),
+check('Самый вытянутый вариант — 1:2',
+      FacadeExport::Config::ASPECTS.key?('1:2'),
+      FacadeExport::Config::ASPECTS.keys.inspect)
+check('Более вытянутых пропорций (2:1, 3:1) в списке нет',
+      !FacadeExport::Config::ASPECTS.key?('2:1') && !FacadeExport::Config::ASPECTS.key?('3:1'),
       FacadeExport::Config::ASPECTS.keys.inspect)
 check('Вертикальных дублей нет (3:4, 2:3, 9:16)',
       !FacadeExport::Config::ASPECTS.key?('3:4') &&
       !FacadeExport::Config::ASPECTS.key?('2:3') &&
       !FacadeExport::Config::ASPECTS.key?('9:16'),
       FacadeExport::Config::ASPECTS.keys.inspect)
-check('Все соотношения записаны широкой стороной',
-      FacadeExport::Config::ASPECTS.values.all? { |w, h| w >= h },
-      FacadeExport::Config::ASPECTS.values.inspect)
+check('Старые настройки 2:1 и 3:1 переезжают в 1:2',
+      begin
+        s2 = FacadeExport::Settings.new
+        s2.replace!('export' => { 'aspect' => '3:1' })
+        s2.exp('aspect') == '1:2'
+      end)
 check('Неизвестная проекция -> параллельная', settings.exp('projection') == 'parallel')
 
 settings.replace!('maps' => [])
@@ -294,13 +307,13 @@ cams = dirs.each_with_index.map do |d, i|
                                      plan[:image_width], plan[:image_height], plan[:gap], true)
 end
 check('Камеры: параллельная проекция', cams.all? { |c| c.perspective? == false })
-# Главная причина «гигантских отступов»: SketchUp строил горизонтальный охват
-# по пропорциям ОКНА, а не кадра. Теперь пропорции задаются камере.
+# Камера больше НЕ навязывает свои пропорции: SketchUp всё равно снимает всё
+# окно и растягивает снимок до запрошенных пикселей. Поэтому снимок делается
+# в пропорциях окна, а кадр вырезается из него по центру.
 expected_ratio = plan[:image_width].to_f / plan[:image_height].to_f
-check('Камера получает пропорции кадра (4:3), а не окна',
-      cams.all? { |c| (c.aspect_ratio - expected_ratio).abs < 1e-9 },
+check('Камера не задаёт пропорции: кадр режется из снимка окна',
+      cams.all? { |c| c.aspect_ratio.to_f <= 0.0 },
       cams.map(&:aspect_ratio).inspect)
-check('Пропорции камеры у всех фасадов одинаковые', cams.map(&:aspect_ratio).uniq.length == 1)
 check('4:3 — это 1,3333', (expected_ratio - 4.0 / 3.0).abs < 1e-3, expected_ratio)
 check('Камеры: одинаковая высота кадра у всех фасадов', cams.map(&:height).uniq.length == 1,
       cams.map(&:height).inspect)
@@ -420,17 +433,16 @@ check('Явная высота используется как есть',
       FacadeExport::Framing.image_size(settings_h.export, projections)[0, 2] == [9999, 5000],
       FacadeExport::Framing.image_size(settings_h.export, projections).inspect)
 
-settings_31 = FacadeExport::Settings.new
-settings_31.set_export('aspect', '3:1')
-plan_31 = FacadeExport::Framing.plan(model.bounds, dirs, settings_31.export)
-check('Соотношение 3:1 -> 9999×3333',
-      plan_31[:image_width] == 9999 && plan_31[:image_height] == 3333,
-      [plan_31[:image_width], plan_31[:image_height]].inspect)
-settings_31.set_export('aspect', '2:1')
-plan_21 = FacadeExport::Framing.plan(box_points(400, 400, 2000), dirs, settings_31.export)
-check('2:1 для башни разворачивается: 5000×9999',
-      plan_21[:image_width] == 5000 && plan_21[:image_height] == 9999,
-      [plan_21[:image_width], plan_21[:image_height]].inspect)
+settings_12 = FacadeExport::Settings.new
+settings_12.set_export('aspect', '1:2')
+plan_12 = FacadeExport::Framing.plan(model.bounds, dirs, settings_12.export)
+check('Самое вытянутое 1:2 для широкого фасада -> 9999×5000',
+      plan_12[:image_width] == 9999 && plan_12[:image_height] == 5000,
+      [plan_12[:image_width], plan_12[:image_height]].inspect)
+plan_tower = FacadeExport::Framing.plan(box_points(400, 400, 2000), dirs, settings_12.export)
+check('1:2 для башни разворачивается: 5000×9999',
+      plan_tower[:image_width] == 5000 && plan_tower[:image_height] == 9999,
+      [plan_tower[:image_width], plan_tower[:image_height]].inspect)
 
 bounds_all, scope_all = FacadeExport::Framing.content_bounds(model)
 check('Без открытой группы кадрируется вся модель', scope_all == :model &&
@@ -611,42 +623,99 @@ plan_par, cams_par = FacadeExport::Framing.visible_cameras(
 check_close('Параллельная камера пользователя: высота кадра без изменений',
             cams_par[0].height, 2500.0, 1e-6)
 
-# Форма окна просмотра на размер кадра не влияет
+# Кадр один и тот же при любой форме окна: снимок делается в пропорциях окна,
+# из него вырезается центральная область кадра.
+view.vpwidth = 1600.0
+view.vpheight = 1200.0
+plan_square, = FacadeExport::Framing.visible_cameras(
+  view.camera, view, FacadeExport.settings.export, 1, true
+)
+check('Окно 4:3: обрезка не нужна — снимок сразу 9999×7499',
+      plan_square[:image_width] == 9999 && plan_square[:image_height] == 7499,
+      [plan_square[:image_width], plan_square[:image_height]].inspect)
+check('Окно 4:3: холст без обрезки',
+      plan_square[:canvas_width] == 9999 && plan_square[:canvas_height] == 7499,
+      [plan_square[:canvas_width], plan_square[:canvas_height]].inspect)
+
+view.vpwidth = 1920.0
+view.vpheight = 1080.0
+plan_wide, = FacadeExport::Framing.visible_cameras(
+  view.camera, view, FacadeExport.settings.export, 1, true
+)
+check('Широкое окно 16:9: кадр всё равно 9999×7499',
+      plan_wide[:image_width] == 9999 && plan_wide[:image_height] == 7499,
+      [plan_wide[:image_width], plan_wide[:image_height]].inspect)
+check('Широкое окно: холст в пропорциях окна шире кадра',
+      plan_wide[:canvas_width] > 9999 && plan_wide[:canvas_height] == 7499,
+      [plan_wide[:canvas_width], plan_wide[:canvas_height]].inspect)
+
+# Совсем широкое окно (21:9) упирается в ограничение SketchUp 16000 px:
+# кадр остаётся 4:3 и обрезается без полей, пикселей чуть меньше.
+view.vpwidth = 2560.0
+view.vpheight = 1080.0
+plan_ultra, = FacadeExport::Framing.visible_cameras(
+  view.camera, view, FacadeExport.settings.export, 1, true
+)
+check('Окно 21:9: холст не больше 16000 px',
+      [plan_ultra[:canvas_width], plan_ultra[:canvas_height]].max <= 16_000,
+      [plan_ultra[:canvas_width], plan_ultra[:canvas_height]].inspect)
+check('Окно 21:9: пропорции кадра сохранены (4:3)',
+      (plan_ultra[:image_width].to_f / plan_ultra[:image_height] - 4.0 / 3.0).abs < 1e-3,
+      [plan_ultra[:image_width], plan_ultra[:image_height]].inspect)
+
 view.vpwidth = 1080.0
-view.vpheight = 1920.0
+view.vpheight = 1440.0
 plan_portrait, = FacadeExport::Framing.visible_cameras(
   view.camera, view, FacadeExport.settings.export, 1, true
 )
 check('Вертикальное окно просмотра: размер всё равно 9999×7499',
       plan_portrait[:image_width] == 9999 && plan_portrait[:image_height] == 7499,
       [plan_portrait[:image_width], plan_portrait[:image_height]].inspect)
+
+# Совсем узкое окно упирается в ограничение SketchUp (16000 px на сторону):
+# пропорции кадра сохраняются, пикселей чуть меньше.
+view.vpwidth = 900.0
+view.vpheight = 1600.0
+plan_extreme, = FacadeExport::Framing.visible_cameras(
+  view.camera, view, FacadeExport.settings.export, 1, true
+)
+check('Очень узкое окно: холст не больше 16000 px',
+      [plan_extreme[:canvas_width], plan_extreme[:canvas_height]].max <= 16_000,
+      [plan_extreme[:canvas_width], plan_extreme[:canvas_height]].inspect)
+check('Очень узкое окно: пропорции кадра сохранены',
+      (plan_extreme[:image_width].to_f / plan_extreme[:image_height] - 4.0 / 3.0).abs < 1e-3,
+      [plan_extreme[:image_width], plan_extreme[:image_height]].inspect)
 view.vpwidth = 1920.0
 view.vpheight = 1080.0
 
 # Соотношение из настроек действует и в режиме «что на экране»
 settings_vis_aspect = FacadeExport::Settings.new
 settings_vis_aspect.set_export('visible_area', true)
-settings_vis_aspect.set_export('aspect', '3:1')
+settings_vis_aspect.set_export('aspect', '1:2')
 plan_vis_31, = FacadeExport::Framing.visible_cameras(
   view.camera, view, settings_vis_aspect.export, 1, true
 )
-check('Видимый режим: 3:1 из настроек -> 9999×3333',
-      plan_vis_31[:image_width] == 9999 && plan_vis_31[:image_height] == 3333,
+check('Видимый режим: 1:2 из настроек -> вертикальный кадр 1:2',
+      ((plan_vis_31[:image_width].to_f / plan_vis_31[:image_height]) - 0.5).abs < 1e-3 &&
+      [plan_vis_31[:image_width], plan_vis_31[:image_height]].max <= 16_000,
       [plan_vis_31[:image_width], plan_vis_31[:image_height]].inspect)
 settings_vis_aspect.set_export('aspect', '1:1')
 plan_vis_11, = FacadeExport::Framing.visible_cameras(
   view.camera, view, settings_vis_aspect.export, 1, true
 )
-check('Видимый режим: 1:1 из настроек -> 9999×9999',
-      plan_vis_11[:image_width] == 9999 && plan_vis_11[:image_height] == 9999,
+# Окно 16:9 шире кадра 1:1 — холст упирается в 16000 px, кадр ужимается
+# пропорционально, но остаётся квадратным.
+check('Видимый режим: 1:1 из настроек -> квадратный кадр',
+      plan_vis_11[:image_width] == plan_vis_11[:image_height] &&
+      plan_vis_11[:image_width] >= 9000,
       [plan_vis_11[:image_width], plan_vis_11[:image_height]].inspect)
 
 # Полный экспорт в этом режиме
 clean_out
 model = new_model
 view = model.active_view
-view.vpwidth = 1920.0
-view.vpheight = 1080.0
+view.vpwidth = 1600.0
+view.vpheight = 1200.0
 fresh_settings
 FacadeExport.settings.set_export('visible_area', true)
 before_eye = view.camera.eye.to_a
@@ -663,8 +732,8 @@ check('Видимый режим: размеры из настроек (9999×74
 check('Видимый режим: камера пользователя не сдвинута',
       view.writes.first[:camera].eye.to_a == before_eye,
       [view.writes.first[:camera].eye.to_a, before_eye].inspect)
-check('Видимый режим: камере заданы пропорции PNG, а не окна',
-      view.writes.all? { |w| (w[:camera].aspect_ratio - 9999.0 / 7499.0).abs < 1e-9 },
+check('Видимый режим: камере пропорции не навязываются',
+      view.writes.all? { |w| w[:camera].aspect_ratio.to_f <= 0.0 },
       view.writes.map { |w| w[:camera].aspect_ratio }.uniq.inspect)
 check('Видимый режим: камера восстановлена', view.camera.eye.to_a == before_eye)
 check('Видимый режим: стиль всё равно настроен',
@@ -702,21 +771,17 @@ check('Точка взгляда и цель сохраняются',
 check_close('Высота кадра эквивалентна перспективе',
             converted.height, expected_persp_height, 1e-6)
 
-# Перспектива: пропорции кадра тоже уходят в камеру, а угол обзора
-# пересчитывается так, чтобы по вертикали остаться прежним.
+# Перспектива: пропорции камере не навязываются (кадр режется из снимка окна),
+# угол обзора остаётся вертикальным 35°.
 persp_cam = FacadeExport::Framing.build_camera(
   model.bounds, dirs[0], plan[:projections][0], plan[:scale],
   plan[:image_width], plan[:image_height], plan[:gap], false
 )
 persp_ratio = plan[:image_width].to_f / plan[:image_height].to_f
-check('Перспектива: камера получает пропорции кадра',
-      (persp_cam.aspect_ratio - persp_ratio).abs < 1e-9, persp_cam.aspect_ratio)
-check('Перспектива: угол обзора пересчитан на горизонтальный',
-      (persp_cam.fov - 2.0 * Math.atan(Math.tan(35.0 * Math::PI / 360.0) * persp_ratio) * 180.0 / Math::PI).abs < 1e-6,
-      persp_cam.fov)
-check('Перспектива: вертикальный угол остался 35°',
-      (2.0 * Math.atan(Math.tan(persp_cam.fov * Math::PI / 360.0) / persp_ratio) * 180.0 / Math::PI - 35.0).abs < 1e-6,
-      persp_cam.fov)
+check('Перспектива: камера не задаёт пропорции',
+      persp_cam.aspect_ratio.to_f <= 0.0, persp_cam.aspect_ratio)
+check('Перспектива: вертикальный угол 35°',
+      (persp_cam.fov - 35.0).abs < 1e-6, persp_cam.fov)
 # Перспективная камера должна показывать ту же область, что и параллельная:
 # расстояние = (высота кадра / 2) / tan(FOV / 2), иначе фасад «уезжает» и
 # по краям остаются поля (именно так было раньше — вписывался шар модели).
@@ -784,22 +849,56 @@ check('Видимый режим из перспективы: высота ка�
 check('Видимый режим из перспективы: камера пользователя восстановлена',
       view.camera.perspective? == true && view.camera.eye.to_a == before_eye2)
 
-# Явная высота перекрывает соотношение окна
+# Явная высота перекрывает соотношение сторон кадра
 clean_out
 model = new_model
 view = model.active_view
-view.vpwidth = 1920.0
-view.vpheight = 1080.0
+view.vpwidth = 1600.0
+view.vpheight = 1200.0
 fresh_settings
-FacadeExport.settings.set_export('visible_area', true)
-FacadeExport.settings.set_export('height', 4000)
-FacadeExport::Exporter.new(
-  :model => model, :view => view, :settings => FacadeExport.settings,
-  :directory => OUT_ROOT, :base_name => 'Своя', :facade_count => 1
-).run
+settings_own_height = FacadeExport::Settings.new
+settings_own_height.set_export('visible_area', true)
+settings_own_height.set_export('height', 4000)
+plan_own_height, = FacadeExport::Framing.visible_cameras(
+  view.camera, view, settings_own_height.export, 1, true
+)
 check('Видимый режим: явная высота уважается',
-      view.writes.all? { |w| w[:width] == 9999 && w[:height] == 4000 },
+      plan_own_height[:image_width] == 9999 && plan_own_height[:image_height] == 4000,
+      [plan_own_height[:image_width], plan_own_height[:image_height]].inspect)
+
+# --------------------------- 4в. обрезка снимка окна под пропорции кадра
+
+section 'Снимок окна обрезается до кадра'
+clean_out
+model = new_model
+view = model.active_view
+# Окно 16:9, а кадр 4:3: SketchUp снимет всё окно, плагин вырежет центр.
+view.vpwidth = 1600.0
+view.vpheight = 900.0
+fresh_settings
+FacadeExport.settings.set_export('width', 640)
+crop_result = FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Обрезка', :facade_count => 1
+).run
+check('Обрезка: экспорт выполнен', crop_result.errors.empty?, crop_result.errors.inspect)
+check('Обрезка: снимок делается в пропорциях окна (853×480)',
+      view.writes.map { |w| [w[:width], w[:height]] }.uniq == [[853, 480]],
       view.writes.map { |w| [w[:width], w[:height]] }.uniq.inspect)
+check('Обрезка: готовый файл ровно 640×480',
+      crop_result.files.map { |f| png_size(f) }.uniq == [[640, 480]],
+      crop_result.files.map { |f| png_size(f) }.uniq.inspect)
+cropped = File.binread(crop_result.files.first).to_s
+start = cropped.index("CROPPED\n")
+start = start ? start + 8 : 0
+check('Обрезка: первый пиксель — из центра снимка (сдвиг 106 px)',
+      cropped.getbyte(start) == 106 % 256 && cropped.getbyte(start + 1) == 0,
+      [cropped.getbyte(start), cropped.getbyte(start + 1)].inspect)
+last_pixel = start + (640 * 480 - 1) * 4
+check('Обрезка: последний пиксель — правый нижний угол кадра',
+      cropped.getbyte(last_pixel) == (106 + 639) % 256 &&
+      cropped.getbyte(last_pixel + 1) == 479 % 256,
+      [cropped.getbyte(last_pixel), cropped.getbyte(last_pixel + 1)].inspect)
 
 # ---------------------------------------------------- 5. полный экспорт (16)
 
@@ -846,9 +945,12 @@ check('Размер не зависит от окна просмотра: дли
 check('Кадр один на все фасады: 9999×7499',
       writes.map { |w| [w[:width], w[:height]] }.uniq == [[9999, 7499]],
       writes.map { |w| [w[:width], w[:height]] }.uniq.inspect)
-check('Камера каждого PNG получает пропорции кадра, а не окна',
-      writes.all? { |w| (w[:camera].aspect_ratio - 9999.0 / 7499.0).abs < 1e-9 },
+check('Камера каждого PNG без навязанных пропорций',
+      writes.all? { |w| w[:camera].aspect_ratio.to_f <= 0.0 },
       writes.map { |w| w[:camera].aspect_ratio }.uniq.inspect)
+check('Размер готовых файлов: 9999×7499',
+      result.files.map { |f| png_size(f) }.uniq == [[9999, 7499]],
+      result.files.map { |f| png_size(f) }.uniq.inspect)
 same_size = (1..4).all? do |n|
   sizes = %w[Текстура Линии Тени Окна].map do |t|
     w = writes.find { |item| item[:path].include?("Фасад_#{n}_#{t}.png") }

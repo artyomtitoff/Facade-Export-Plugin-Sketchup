@@ -137,19 +137,19 @@ check("Подсказка про пропорции объясняет запа�
   byPath("export.aspect").closest(".field").textContent.includes("сверху"));
 check("Нет формулировки «по заданию»", !doc.body.textContent.includes("по заданию"));
 
-// --- п. 3: соотношения — только широкие + 2:1 и 3:1
+// --- п. 3: соотношения — самый вытянутый вариант 1:2
 const aspectSelect = byPath("export.aspect");
 const aspectValues = [...aspectSelect.querySelectorAll("option")].map((o) => o.value);
-check("Соотношения: есть 3:1 и 2:1",
-  aspectValues.includes("3:1") && aspectValues.includes("2:1"), aspectValues.join(", "));
+check("Соотношения: самый вытянутый — 1:2",
+  aspectValues.includes("1:2"), aspectValues.join(", "));
+check("Соотношения: более вытянутых (2:1, 3:1) нет",
+  !aspectValues.includes("2:1") && !aspectValues.includes("3:1"), aspectValues.join(", "));
 check("Соотношения: вертикальных дублей нет",
   !aspectValues.includes("3:4") && !aspectValues.includes("2:3") && !aspectValues.includes("9:16"),
   aspectValues.join(", "));
-check("Соотношения: все широкие или 1:1",
-  aspectValues.every((v) => {
-    const [w, h] = v.split(":").map(Number);
-    return w >= h;
-  }), aspectValues.join(", "));
+check("Соотношения: 1:2 подписана как самый вытянутый вариант",
+  aspectSelect.querySelector('option[value="1:2"]')?.textContent.includes("вытянут"),
+  aspectSelect.querySelector('option[value="1:2"]')?.textContent);
 
 // --- карта окон: отбеливание текстур выключается в расширенных настройках
 const whiten = byPath("export.whiten_textures");
