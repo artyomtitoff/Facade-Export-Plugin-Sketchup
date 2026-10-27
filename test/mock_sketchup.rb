@@ -452,6 +452,24 @@ module Sketchup
       @perspective = true
       @height = 100.0
       @fov = 35.0
+      # 0.0 — как в SketchUp: пропорции берутся из окна просмотра.
+      @aspect_ratio = 0.0
+      # По умолчанию угол обзора в SketchUp считается по вертикали.
+      @fov_is_height = true
+    end
+
+    attr_reader :aspect_ratio
+
+    # Как и в SketchUp: при заданных пропорциях угол обзора начинает
+    # считаться по горизонтали.
+    def aspect_ratio=(value)
+      @aspect_ratio = value.to_f
+      @fov_is_height = @aspect_ratio <= 0.0
+      @aspect_ratio
+    end
+
+    def fov_is_height?
+      @fov_is_height
     end
 
     def direction

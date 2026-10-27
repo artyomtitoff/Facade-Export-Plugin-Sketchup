@@ -32,7 +32,7 @@ const defaults = {
   export: {
     width: 9999, height: 0, line_scale: 0.3, margin: 0.02,
     restore_view: true, show_report: true, fit_all_facades: false,
-    aspect: "auto", whiten_textures: true, projection: "parallel", sun_for_shading: false,
+    aspect: "4:3", whiten_textures: true, projection: "parallel", sun_for_shading: false,
     use_view_size: false, visible_area: false, antialias: false, transparent: true,
     background: "#FFFFFF",
     hide_sky: true, hide_ground: true, hide_watermarks: true, last_directory: "",
@@ -127,12 +127,14 @@ check("Светлее/темнее больше нет на вкладке «Э�
   !byPath("export.shadow_light") && !byPath("export.shadow_dark"));
 check("Пропорции кадра — в основных настройках, не в «Расширенных»",
   !!exportTab.querySelector("details.adv") && byPath("export.aspect")?.closest("details.adv") === null);
-check("Пропорции по умолчанию — «по фасаду»", byPath("export.aspect")?.value === "auto",
+check("Пропорции по умолчанию — жёсткие 4:3", byPath("export.aspect")?.value === "4:3",
   byPath("export.aspect")?.value);
-check("В списке пропорций есть «по фасаду» первой",
-  [...byPath("export.aspect").querySelectorAll("option")][0].value === "auto");
-check("Подсказка про пропорции объясняет пустые поля",
-  byPath("export.aspect").closest(".field").textContent.includes("без пустых полей"));
+check("В списке пропорций первым идёт 4:3",
+  [...byPath("export.aspect").querySelectorAll("option")][0].value === "4:3");
+check("Режима «по фасаду» в списке нет",
+  ![...byPath("export.aspect").querySelectorAll("option")].some((o) => o.value === "auto"));
+check("Подсказка про пропорции объясняет запас сверху",
+  byPath("export.aspect").closest(".field").textContent.includes("сверху"));
 check("Нет формулировки «по заданию»", !doc.body.textContent.includes("по заданию"));
 
 // --- п. 3: соотношения — только широкие + 2:1 и 3:1
@@ -144,7 +146,7 @@ check("Соотношения: вертикальных дублей нет",
   !aspectValues.includes("3:4") && !aspectValues.includes("2:3") && !aspectValues.includes("9:16"),
   aspectValues.join(", "));
 check("Соотношения: все широкие или 1:1",
-  aspectValues.filter((v) => v !== "auto").every((v) => {
+  aspectValues.every((v) => {
     const [w, h] = v.split(":").map(Number);
     return w >= h;
   }), aspectValues.join(", "));

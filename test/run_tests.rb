@@ -114,14 +114,13 @@ check('Имя файла: префикс из окна сохранения со
       FacadeExport::Exporter.file_name('Дом_Иванова', 1, 'Текстура') == 'Дом_Иванова_Фасад_1_Текстура.png')
 
 settings = fresh_settings
-check('Версия настроек 5', settings.data['version'] == 5, settings.data['version'])
+check('Версия настроек 6', settings.data['version'] == 6, settings.data['version'])
 check('Ширина по умолчанию 9999', settings.exp('width') == 9999)
 check('Высота автоматическая (0)', settings.exp('height') == 0)
-check('Пропорции по умолчанию — «по фасаду» (без полей)',
-      settings.exp('aspect') == 'auto', settings.exp('aspect').inspect)
-check('Кадр «по фасаду» включён по умолчанию', FacadeExport::Config.auto_aspect?('auto'))
-check('В списке пропорций есть и «по фасаду», и 4:3',
-      FacadeExport::Config.aspect_options.map(&:first) == %w[auto 4:3 3:2 16:9 2:1 3:1 1:1],
+check('Пропорции по умолчанию жёсткие — 4:3',
+      settings.exp('aspect') == '4:3', settings.exp('aspect').inspect)
+check('В списке пропорций нет «по фасаду»',
+      FacadeExport::Config.aspect_options.map(&:first) == %w[4:3 3:2 16:9 2:1 3:1 1:1],
       FacadeExport::Config.aspect_options.inspect)
 check('Отбеливание текстур на карте окон включено по умолчанию',
       settings.exp('whiten_textures') == true, settings.exp('whiten_textures').inspect)
@@ -151,14 +150,13 @@ old_settings = FacadeExport::Settings.new(
 check('Старые настройки: включённое небо сохраняется',
       old_settings.exp('hide_sky') == false && old_settings.exp('hide_ground') == true,
       [old_settings.exp('hide_sky'), old_settings.exp('hide_ground')].inspect)
-check('Старые настройки: версия обновлена', old_settings.data['version'] == 5)
-# До 1.5.3 пропорции были жёстко 4:3 — такие настройки переводятся на «по фасаду»,
-# а выбранные вручную — нет.
-legacy = FacadeExport::Settings.new('version' => 4, 'export' => { 'aspect' => '4:3' })
-check('Старые настройки: пропорции 4:3 -> «по фасаду»', legacy.exp('aspect') == 'auto',
+check('Старые настройки: версия обновлена', old_settings.data['version'] == 6)
+# В 1.5.3 пропорции были «auto» — такие настройки возвращаются к 4:3.
+legacy = FacadeExport::Settings.new('version' => 5, 'export' => { 'aspect' => 'auto' })
+check('Старые настройки: «auto» -> 4:3', legacy.exp('aspect') == '4:3',
       legacy.exp('aspect').inspect)
-chosen = FacadeExport::Settings.new('version' => 5, 'export' => { 'aspect' => '4:3' })
-check('Сознательно выбранные 4:3 не перетираются', chosen.exp('aspect') == '4:3',
+chosen = FacadeExport::Settings.new('version' => 5, 'export' => { 'aspect' => '16:9' })
+check('Сознательно выбранные 16:9 сохраняются', chosen.exp('aspect') == '16:9',
       chosen.exp('aspect').inspect)
 check('Возврат вида включён', settings.exp('restore_view') == true)
 check('Отчёт включён', settings.exp('show_report') == true)
@@ -226,7 +224,7 @@ check('Строка "true" -> true', settings.map('texture')['enabled'] == true)
 check('Неизвестный режим -> shaded', settings.map('texture')['render_mode'] == 'shaded')
 
 settings.replace!('export' => { 'aspect' => 'нет такого', 'projection' => 'странная' })
-check('Неизвестное соотношение -> по фасаду', settings.exp('aspect') == 'auto')
+check('Неизвестное соотношение -> 4:3', settings.exp('aspect') == '4:3')
 settings.replace!('export' => { 'aspect' => '4:3' })
 check('4:3 выбирается вручную', settings.exp('aspect') == '4:3')
 check('Есть широкие соотношения 2:1 и 3:1',
@@ -264,60 +262,12 @@ dirs.each_with_index do |d, i|
 end
 check_close('Поворот на 90°: длина вектора = 1', dirs[1].length, 1.0, 1e-9)
 
-# ---- кадр «по фасаду» (по умолчанию): у каждого PNG свои размеры, полей нет
+# ---- жёсткий кадр: один размер на все фасады, фасад прижат к низу и бокам
 fresh_settings
-tight = FacadeExport::Framing.plan(model.bounds, dirs, FacadeExport.settings.export)
-tight_sizes = FacadeExport::Framing.frame_sizes(tight, 4)
-tight_proj = tight[:projections]
-check('«По фасаду»: размер кадра у каждого фасада свой', tight_sizes.uniq.length == 2,
-      tight_sizes.inspect)
-check('«По фасаду»: у большого фасада длинная сторона 9999',
-      tight_sizes[0][0] == 9999, tight_sizes.inspect)
-# В кадре ровно фасад плюс зазор с каждой стороны — и ничего больше.
-tight_sizes.each_with_index do |(w, h), i|
-  content_w = (tight_proj[i][:width] * tight[:scale]).round
-  content_h = (tight_proj[i][:height] * tight[:scale]).round
-  check("«По фасаду»: фасад #{i + 1} занимает кадр целиком (полей нет)",
-        (w - content_w - 2 * tight[:gap]).abs <= 1 && (h - content_h - 2 * tight[:gap]).abs <= 1,
-        [w, h, content_w, content_h, tight[:gap]].inspect)
-end
-check('«По фасаду»: масштаб общий у всех фасадов',
-      tight[:scale].positive? && (tight[:scale] - 9599.0 / 1200.0).abs < 1e-6, tight[:scale])
-check('«По фасаду»: у узкого фасада кадр уже, но той же высоты',
-      tight_sizes[1][0] < tight_sizes[0][0] && tight_sizes[1][1] == tight_sizes[0][1],
-      tight_sizes.inspect)
-tight_cams = dirs.each_with_index.map do |d, i|
-  w, h = tight_sizes[i]
-  FacadeExport::Framing.build_camera(model.bounds, d, tight_proj[i], tight[:scale],
-                                     w, h, tight[:gap], true)
-end
-tight_gaps = tight_cams.each_with_index.map do |cam, i|
-  # Низ кадра и низ фасада: зазор должен быть одинаковым у всех фасадов.
-  (tight_proj[i][:v_min] - (cam.target.z - cam.height / 2.0)) * tight[:scale]
-end
-check('«По фасаду»: фасад прижат к низу кадра с тем же зазором',
-      tight_gaps.all? { |g| (g - 200.0).abs < 1.0 }, tight_gaps.inspect)
-# Раньше при 4:3 узкий фасад занимал четверть ширины кадра — это и был
-# «большой отступ». Теперь пустых полос нет ни у одного фасада.
-fixed = FacadeExport::Settings.new
-fixed.set_export('aspect', '4:3')
-fixed_plan = FacadeExport::Framing.plan(model.bounds, dirs, fixed.export)
-wide_share = fixed_plan[:projections][1][:width] * fixed_plan[:scale] / fixed_plan[:image_width]
-check('4:3: узкий фасад занимает лишь часть ширины кадра (старое поведение)',
-      wide_share < 0.75, wide_share)
-check('«По фасаду»: у узкого фасада кадр уже, полос нет',
-      tight_sizes[1][0] == (800 * tight[:scale]).round + 2 * tight[:gap], tight_sizes[1].inspect)
-
-# ---- фиксированные пропорции: кадр ровно такой, какой выбрали
-settings_43 = FacadeExport::Settings.new
-settings_43.set_export('aspect', '4:3')
-plan = FacadeExport::Framing.plan(model.bounds, dirs, settings_43.export)
+plan = FacadeExport::Framing.plan(model.bounds, dirs, FacadeExport.settings.export)
 projections = plan[:projections]
 check('Кадр 4:3 -> 9999×7499', plan[:image_width] == 9999 && plan[:image_height] == 7499,
       [plan[:image_width], plan[:image_height]].inspect)
-check('Размеры кадра не зависят от фасада (4:3)',
-      FacadeExport::Framing.frame_sizes(plan, 4).uniq.length == 1,
-      FacadeExport::Framing.frame_sizes(plan, 4).inspect)
 check('Зазор 2 % от 9999 = 200 px', plan[:gap] == 200, plan[:gap])
 check('Проекции Y-фасадов: ширина 1200',
       (projections[0][:width] - 1200).abs < 1e-6 && (projections[2][:width] - 1200).abs < 1e-6,
@@ -326,14 +276,32 @@ check('Проекции X-фасадов: ширина 800', (projections[1][:wi
       projections.map { |p| p[:width] }.inspect)
 check('Высота проекции 600', (projections[0][:height] - 600).abs < 1e-6)
 check('Самый большой фасад — первый', plan[:biggest] == 0, plan[:biggest])
-check_close('Общий масштаб: 1200 px-единиц в 9599 px', plan[:scale], 9599.0 / 1200.0, 1e-6)
+check_close('Общий масштаб: 1200 единиц в 9599 px', plan[:scale], 9599.0 / 1200.0, 1e-6)
+
+# Главное требование к жёсткому кадру: у самого большого фасада по бокам
+# только зазор, снизу зазор, а свободное место остаётся СВЕРХУ.
+content_w = (projections[0][:width] * plan[:scale]).round
+content_h = (projections[0][:height] * plan[:scale]).round
+check('Самый большой фасад занимает всю ширину кадра (полей по бокам нет)',
+      (plan[:image_width] - content_w - 2 * plan[:gap]).abs <= 1,
+      [plan[:image_width], content_w, plan[:gap]].inspect)
+check('Сверху остаётся запас на изменение высоты',
+      plan[:image_height] - content_h - 2 * plan[:gap] > 1000,
+      [plan[:image_height], content_h, plan[:gap]].inspect)
 
 cams = dirs.each_with_index.map do |d, i|
   FacadeExport::Framing.build_camera(model.bounds, d, projections[i], plan[:scale],
                                      plan[:image_width], plan[:image_height], plan[:gap], true)
 end
-check('4:3: кадр один на все фасады', plan[:sizes].nil?)
 check('Камеры: параллельная проекция', cams.all? { |c| c.perspective? == false })
+# Главная причина «гигантских отступов»: SketchUp строил горизонтальный охват
+# по пропорциям ОКНА, а не кадра. Теперь пропорции задаются камере.
+expected_ratio = plan[:image_width].to_f / plan[:image_height].to_f
+check('Камера получает пропорции кадра (4:3), а не окна',
+      cams.all? { |c| (c.aspect_ratio - expected_ratio).abs < 1e-9 },
+      cams.map(&:aspect_ratio).inspect)
+check('Пропорции камеры у всех фасадов одинаковые', cams.map(&:aspect_ratio).uniq.length == 1)
+check('4:3 — это 1,3333', (expected_ratio - 4.0 / 3.0).abs < 1e-3, expected_ratio)
 check('Камеры: одинаковая высота кадра у всех фасадов', cams.map(&:height).uniq.length == 1,
       cams.map(&:height).inspect)
 cams.each_with_index do |c, i|
@@ -695,6 +663,9 @@ check('Видимый режим: размеры из настроек (9999×74
 check('Видимый режим: камера пользователя не сдвинута',
       view.writes.first[:camera].eye.to_a == before_eye,
       [view.writes.first[:camera].eye.to_a, before_eye].inspect)
+check('Видимый режим: камере заданы пропорции PNG, а не окна',
+      view.writes.all? { |w| (w[:camera].aspect_ratio - 9999.0 / 7499.0).abs < 1e-9 },
+      view.writes.map { |w| w[:camera].aspect_ratio }.uniq.inspect)
 check('Видимый режим: камера восстановлена', view.camera.eye.to_a == before_eye)
 check('Видимый режим: стиль всё равно настроен',
       view.writes.all? { |w| w[:rendering]['DrawSky'] == false })
@@ -730,6 +701,22 @@ check('Точка взгляда и цель сохраняются',
       [converted.eye.to_a, converted.target.to_a].inspect)
 check_close('Высота кадра эквивалентна перспективе',
             converted.height, expected_persp_height, 1e-6)
+
+# Перспектива: пропорции кадра тоже уходят в камеру, а угол обзора
+# пересчитывается так, чтобы по вертикали остаться прежним.
+persp_cam = FacadeExport::Framing.build_camera(
+  model.bounds, dirs[0], plan[:projections][0], plan[:scale],
+  plan[:image_width], plan[:image_height], plan[:gap], false
+)
+persp_ratio = plan[:image_width].to_f / plan[:image_height].to_f
+check('Перспектива: камера получает пропорции кадра',
+      (persp_cam.aspect_ratio - persp_ratio).abs < 1e-9, persp_cam.aspect_ratio)
+check('Перспектива: угол обзора пересчитан на горизонтальный',
+      (persp_cam.fov - 2.0 * Math.atan(Math.tan(35.0 * Math::PI / 360.0) * persp_ratio) * 180.0 / Math::PI).abs < 1e-6,
+      persp_cam.fov)
+check('Перспектива: вертикальный угол остался 35°',
+      (2.0 * Math.atan(Math.tan(persp_cam.fov * Math::PI / 360.0) / persp_ratio) * 180.0 / Math::PI - 35.0).abs < 1e-6,
+      persp_cam.fov)
 check('Исходная камера не изменена', persp.perspective? == true)
 
 fresh_settings
@@ -837,14 +824,16 @@ check('Все файлы непустые', result.files.all? { |f| File.size(f)
 
 writes = view.writes
 check('Записей изображений: 16', writes.length == 16)
-# Кадр «по фасаду»: длинная сторона большого фасада — 9999, размеры свои
-# у каждого фасада (и одинаковые внутри фасада, для всех карт).
+# Жёсткий кадр: размер один и тот же у всех фасадов и не зависит от окна.
 check('Размер не зависит от окна просмотра: длинная сторона 9999',
       writes.map { |w| [w[:width], w[:height]].max }.max == 9999,
       writes.map { |w| [w[:width], w[:height]] }.uniq.inspect)
-check('Кадр «по фасаду»: полей нет — размеры кратны содержимому',
-      writes.map { |w| [w[:width], w[:height]] }.uniq.length == 2,
+check('Кадр один на все фасады: 9999×7499',
+      writes.map { |w| [w[:width], w[:height]] }.uniq == [[9999, 7499]],
       writes.map { |w| [w[:width], w[:height]] }.uniq.inspect)
+check('Камера каждого PNG получает пропорции кадра, а не окна',
+      writes.all? { |w| (w[:camera].aspect_ratio - 9999.0 / 7499.0).abs < 1e-9 },
+      writes.map { |w| w[:camera].aspect_ratio }.uniq.inspect)
 same_size = (1..4).all? do |n|
   sizes = %w[Текстура Линии Тени Окна].map do |t|
     w = writes.find { |item| item[:path].include?("Фасад_#{n}_#{t}.png") }
@@ -1110,12 +1099,10 @@ check('Окружение скрыто на время экспорта',
 check('Окружение возвращено после экспорта',
       model.entities.none? { |e| e.hidden? },
       model.entities.map { |e| e.hidden? }.inspect)
-# Кадр «по фасаду»: у большого фасада длинная сторона 9999, у остальных —
-# меньше, и ни у одного нет пустых полос.
+# Кадр по группе: тот же жёсткий размер, что и для всей модели.
 group_sizes = view.writes.map { |w| [w[:width], w[:height]] }.uniq
-check('Кадр по группе: «по фасаду», полей нет',
-      group_sizes.map(&:max).max == 9999 && group_sizes.length == 2,
-      group_sizes.inspect)
+check('Кадр по группе: один размер 9999×7499',
+      group_sizes == [[9999, 7499]], group_sizes.inspect)
 cam_ctx = view.writes.first[:camera]
 check_close('Камера смотрит в группу (цель по её центру X)', cam_ctx.target.x, 1200.0, 1.0)
 check('Камера ближе, чем для всей модели', cam_ctx.height < 2000.0, cam_ctx.height)
@@ -1356,7 +1343,7 @@ result_one = FacadeExport::Exporter.new(
 height_on = view.writes.first[:camera].height
 width_on = view.writes.first[:width]
 check('С подгонкой масштаб по самому большому фасаду',
-      width_on < width_off / 4 && height_on > height_off,
+      width_on == width_off && height_on > height_off,
       [width_off, width_on, height_off, height_on].inspect)
 check('С подгонкой всё равно один фасад', result_one.files.length == 4,
       result_one.files.length)
