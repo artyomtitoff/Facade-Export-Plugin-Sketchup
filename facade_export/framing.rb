@@ -462,14 +462,6 @@ module FacadeExport
       scale
     end
 
-    # Размеры кадра для каждого фасада: в режиме «по фасаду» они разные,
-    # в остальных режимах — один и тот же размер на все изображения.
-    def frame_sizes(plan, count = 1)
-      sizes = plan[:sizes]
-      return sizes unless sizes.nil? || sizes.empty?
-      Array.new(count) { [plan[:image_width], plan[:image_height]] }
-    end
-
     # Зазор в пикселях кадра.
     def gap_pixels(export_settings, image_width, image_height)
       fraction = export_settings['margin'].to_f
@@ -515,6 +507,42 @@ module FacadeExport
           camera.height = frame_height
         else
           camera.fov = FOV
+        end
+      rescue StandardError
+        nil
+      end
+      apply_aspect_ratio(camera, image_width, image_height, parallel)
+    end
+
+    # Пропорции кадра уходят в саму камеру.
+    #
+    # SketchUp по умолчанию (camera.aspect_ratio = 0) строит горизонтальный
+    # охват по пропорциям ОКНА просмотра, а write_image растягивает картинку
+    # до заданных пикселей. Поэтому при жёстком кадре 4:3 в широком окне
+    # горизонтальный охват оказывался шире нужного: фасад занимал не всю
+    # ширину PNG, и слева-справа появлялись поля — сразу у всех четырёх
+    # фасадов, включая самый большой, по которому считается масштаб. Именно
+    # поэтому «отступы» не находились в геометрии: их давало окно SketchUp.
+    #
+    # Теперь пропорции камеры равны пропорциям PNG, кадр одинаков на любом
+    # компьютере и при любом размере окна, а геометрия не растягивается.
+    def apply_aspect_ratio(camera, image_width, image_height, parallel = true)
+      width = image_width.to_i
+      height = image_height.to_i
+      return camera if width <= 0 || height <= 0
+      ratio = width.to_f / height.to_f
+      return camera unless ratio.finite? && ratio > 0.0
+      begin
+        camera.aspect_ratio = ratio
+      rescue StandardError
+        return camera
+      end
+      # После установки пропорций угол обзора перспективной камеры начинает
+      # считаться по горизонтали. Возвращаем его к прежнему вертикальному
+      # значению, иначе фасад обрежется сверху и снизу.
+      begin
+        if !parallel && camera.respond_to?(:fov_is_height?) && !camera.fov_is_height?
+          camera.fov = 2.0 * Math.atan(Math.tan(FOV * Math::PI / 360.0) * ratio) * 180.0 / Math::PI
         end
       rescue StandardError
         nil
@@ -689,6 +717,8 @@ module FacadeExport
         rescue StandardError
           nil
         end
+        # Пропорции PNG — в камеру: иначе кадр зависел бы от размера окна.
+        apply_aspect_ratio(cam, width, height, parallel)
         cameras << cam
         # поворот вектора «цель -> камера» на 90° вокруг вертикальной оси
         dx, dy = dy, -dx
@@ -708,7 +738,6 @@ module FacadeExport
     def plan(bounds, directions, export_settings)
       corners = bbox_corners(bounds)
       projections = directions.map { |d| projection_with_depth(corners, d) }
-      return tight_plan(projections, export_settings) if tight_aspect?(export_settings)
       width, height, vertical = image_size(export_settings, projections)
       gap = gap_pixels(export_settings, width, height)
       scale = pixels_per_unit(projections, width, height, gap)
@@ -720,64 +749,6 @@ module FacadeExport
         :gap => gap,
         :scale => scale,
         :biggest => biggest_index(projections)
-      }
-    end
-
-    # Кадр «по фасаду»: у каждого PNG свои размеры — ровно вокруг своего
-    # фасада, без пустых полей по краям.
-    #
-    # Откуда берутся большие отступы при фиксированных пропорциях:
-    # ширина и высота кадра заданы заранее (4:3), а фасад в них имеет свою
-    # форму. Кадр вписывается по «упирающейся» стороне, поэтому у остальных
-    # фасадов остаётся широкая пустая полоса — у узкого бокового фасада это
-    # тысячи пикселей слева и справа, у низкого — сверху. Плюс масштаб общий
-    # на все четыре фасада: самый широкий фасад задаёт его, и все остальные
-    # становятся мельче, чем могли бы быть.
-    #
-    # Здесь кадр считается по каждому фасаду отдельно: ширина = ширина фасада
-    # в пикселях + зазор, высота — так же. Масштаб по-прежнему общий (по
-    # самому большому фасаду), поэтому весь набор нарисован в одном масштабе,
-    # а длинная сторона самого большого фасада равна «длине большей стороны»
-    # из настроек.
-    #
-    # Если высота кадра задана вручную (export.height > 0), кадр остаётся
-    # ровно таким, каким его задал пользователь.
-    def tight_aspect?(export_settings)
-      return false if export_settings['height'].to_i > 0
-      Config.auto_aspect?(export_settings['aspect'])
-    end
-
-    def tight_plan(projections, export_settings)
-      longest = export_settings['width'].to_i
-      longest = Config::MIN_IMAGE_SIDE if longest < Config::MIN_IMAGE_SIDE
-      longest = Config::MAX_IMAGE_SIDE if longest > Config::MAX_IMAGE_SIDE
-      gap = gap_pixels(export_settings, longest, longest)
-      avail = [longest - 2.0 * gap, Config::MIN_IMAGE_SIDE].max
-      scale = nil
-      projections.each do |p|
-        candidate = avail / [p[:width].to_f, p[:height].to_f, MIN_SIZE].max
-        scale = candidate if scale.nil? || candidate < scale
-      end
-      scale = 1.0 if scale.nil? || scale <= 0.0 || scale.nan?
-      sizes = projections.map do |p|
-        [
-          [[(p[:width] * scale).round + 2 * gap, Config::MIN_IMAGE_SIDE].max,
-           Config::MAX_IMAGE_SIDE].min,
-          [[(p[:height] * scale).round + 2 * gap, Config::MIN_IMAGE_SIDE].max,
-           Config::MAX_IMAGE_SIDE].min
-        ]
-      end
-      biggest = biggest_index(projections)
-      {
-        :projections => projections,
-        :image_width => sizes[biggest][0],
-        :image_height => sizes[biggest][1],
-        :sizes => sizes,
-        :vertical => sizes[biggest][1] > sizes[biggest][0],
-        :gap => gap,
-        :scale => scale,
-        :biggest => biggest,
-        :auto => true
       }
     end
   end
