@@ -30,12 +30,17 @@ module FacadeExport
     ANGLE_TOL   = 12.0    # градусов: грани одной плоскости
     COS_TOL     = Math.cos(ANGLE_TOL * Math::PI / 180.0)
     VERTICAL_TOL = 0.25   # насколько нормаль должна быть горизонтальной
-    DEPTH_TOL   = 0.02    # допуск по глубине, доля диагонали модели
-    MIN_DEPTH_TOL = 0.5
     MAX_DEPTH   = 24      # глубина обхода групп/компонентов
     PLAN_GRID   = 40      # сетка схемы сверху (40 × 40 клеток)
-    MAX_FACADES  = 30     # больше 30 фасадов в одном контексте не рисуем
-    SNAP_TOL     = 10.0   # градусов: насколько линия «магнитится» к стене
+    # Магнит: линия, которую ведут мышью, доворачивается до направления
+    # основных плоскостей модели (фасадов). 14° — уверенно «цепляет» руку,
+    # но не мешает провести линию под своим углом.
+    SNAP_TOL     = 14.0
+    # Магнитят только НАСТОЯЩИЕ фасады: направление попадает в список, если
+    # на него приходится заметная доля площади стен. Единичные элементы
+    # (откосы, пилоны, козырьки), стоящие под небольшим углом к главной
+    # плоскости, в магниты не попадают.
+    MAGNET_SHARE = 0.10   # доля от площади самого сильного направления
     PREVIEW_SCALE = 1000.0
     PLAN_FACE_Z  = 0.7    # грань считается «вид сверху», если её нормаль вверх
     MAX_PLAN_FACES = 400  # больше граней в контур не берём
@@ -48,6 +53,10 @@ module FacadeExport
     Facade = Struct.new(
       :id, :index, :normal, :direction, :right, :records, :area, :depth,
       :orient, :ratio,
+      # Сторона фасада: false — «наружу» так, как решил плагин, true — как
+      # развернул пользователь. Хранится флагом, поэтому «⇄» можно нажимать
+      # сколько угодно раз: каждый раз сторона именно переключается.
+      :flip,
       :name, :page_name, :selected, :image_width, :image_height, :camera,
       :section_plane, :page, :extents, :segment,
       # Линия, которую пользователь провёл на схеме (мировые координаты).
@@ -83,21 +92,76 @@ module FacadeExport
                            'или проверьте, что геометрия не скрыта.'
       end
       @records = records
-      @depth_tol = depth_tolerance(records)
-      @runs = records.empty? ? [] : cluster_faces(records)
       @plan = plan_map(records)
-      { :facades => [], :plan => @plan, :scope => @scope, :magnets => magnet_angles }
+      { :facades => [], :plan => @plan, :scope => @scope,
+        :magnets => magnet_directions }
     end
 
-    attr_reader :plan, :records, :runs
+    attr_reader :plan, :records
 
-    # Направления основных плоскостей модели (0..180°): по ним «магнитится»
-    # линия, которую пользователь ведёт мышью. Это направления стен.
+    # Направления основных плоскостей модели: по ним «магнитится» линия,
+    # которую пользователь ведёт мышью. Считаются один раз на анализ.
+    #
+    # Берутся не все стены подряд, а только ГЛАВНЫЕ направления: направления
+    # стен собираются в группы (±ANGLE_TOL), площадь групп суммируется, и в
+    # магнит попадают лишь те, где площади не меньше MAGNET_SHARE от самой
+    # большой. Мелкие элементы под небольшим углом к фасаду (откосы, пилоны,
+    # раскладка) магнит не создают — иначе линия «прилипала» к случайному углу.
+    def magnet_directions
+      return @magnet_directions unless @magnet_directions.nil?
+      groups = []
+      (@records || []).each do |record|
+        normal = record[:normal]
+        next if normal.nil?
+        # Направление стены — вдоль фасада, то есть нормаль повёрнута на 90°.
+        angle = normalize_angle(azimuth(normal) + 90.0)
+        area = record[:area].to_f
+        target = groups.find { |group| angle_gap(group[:angle], angle) <= ANGLE_TOL }
+        if target.nil?
+          groups << { :angle => angle, :area => area, :weight => 1.0 }
+        else
+          total = target[:area] + area
+          target[:angle] = blend_angle(target[:angle], target[:area], angle, area, total)
+          target[:area] = total
+          target[:weight] += 1.0
+        end
+      end
+      groups.reject! { |group| group[:area] <= 0.0 }
+      if groups.empty?
+        # Стен нет вовсе — остаются оси модели.
+        @magnet_directions = [[1.0, 0.0], [0.0, 1.0]]
+        return @magnet_directions
+      end
+      strongest = groups.map { |group| group[:area] }.max
+      main = groups.select { |group| group[:area] >= strongest * MAGNET_SHARE }
+      main.sort_by! { |group| -group[:area] }
+      @magnet_directions = main.map do |group|
+        radians = group[:angle] * Math::PI / 180.0
+        [Math.cos(radians).round(6), Math.sin(radians).round(6)]
+      end
+    end
+
+    # Углы магнитов в градусах (0..180) — для проверок и для окна.
     def magnet_angles
-      angles = (@runs || []).map { |run| normalize_angle(azimuth([run[:nx], run[:ny]]) + 90.0) }
-      angles += [0.0, 90.0]
-      angles = angles.map { |angle| (angle * 10.0).round / 10.0 }.uniq.sort
-      angles
+      magnet_directions.map do |(ux, uy)|
+        (normalize_angle(azimuth([ux, uy])) * 10.0).round / 10.0
+      end.uniq.sort
+    end
+
+    # Меньшая разница углов с учётом того, что 0° и 180° — одно направление.
+    def angle_gap(first, second)
+      diff = (normalize_angle(first) - normalize_angle(second)).abs
+      diff > 90.0 ? 180.0 - diff : diff
+    end
+
+    # Среднее направление двух близких углов с весом по площади.
+    def blend_angle(angle_a, area_a, angle_b, area_b, total)
+      return angle_b if total <= 0.0
+      x = Math.cos(angle_a * Math::PI / 180.0) * area_a +
+          Math.cos(angle_b * Math::PI / 180.0) * area_b
+      y = Math.sin(angle_a * Math::PI / 180.0) * area_a +
+          Math.sin(angle_b * Math::PI / 180.0) * area_b
+      normalize_angle(Math.atan2(y, x) * 180.0 / Math::PI)
     end
 
     def normalize_angle(deg)
@@ -187,7 +251,7 @@ module FacadeExport
       @plan && @plan[:span] ? @plan[:span] : 1.0
     end
 
-    def build_drawn_facade(x1, y1, x2, y2, invert = false, orient = nil, ratio = nil)
+    def build_drawn_facade(x1, y1, x2, y2, flip = false, orient = nil, ratio = nil)
       dx = x2.to_f - x1.to_f
       dy = y2.to_f - y1.to_f
       length = Math.sqrt(dx * dx + dy * dy)
@@ -197,13 +261,14 @@ module FacadeExport
       mx = (x1.to_f + x2.to_f) / 2.0
       my = (y1.to_f + y2.to_f) / 2.0
       nx, ny = outward_normal(mx, my, ux, uy)
-      nx, ny = -nx, -ny if invert
+      nx, ny = -nx, -ny if flip
       right = [-ny, nx]
       u1 = x1.to_f * right[0] + y1.to_f * right[1]
       u2 = x2.to_f * right[0] + y2.to_f * right[1]
       u_min, u_max = [u1, u2].min, [u1, u2].max
       depth = mx * nx + my * ny
       facade = Facade.new
+      facade.flip = flip ? true : false
       facade.normal = Geom::Vector3d.new(nx, ny, 0.0)
       facade.direction = Geom::Vector3d.new(-nx, -ny, 0.0)
       facade.right = Geom::Vector3d.new(right[0], right[1], 0.0)
@@ -214,7 +279,8 @@ module FacadeExport
       height = (facade.extents[:v_max] - facade.extents[:v_min]).abs
       facade.area = (u_max - u_min).abs * [height, 0.0].max
       facade.orient = Config.auto_orient(orient || @settings.auto_val('orient'))
-      facade.ratio = Config.auto_ratio_name(ratio || @settings.auto_val('ratio'))
+      facade.ratio = Config.auto_ratio_name(ratio || @settings.auto_val('ratio'),
+                                           facade.orient)
       facade.selected = true
       facade.segment = drawn_segment(x1.to_f, y1.to_f, x2.to_f, y2.to_f, nx, ny)
       facade
@@ -249,22 +315,42 @@ module FacadeExport
         u_min, u_max = [u1, u2].min, [u1, u2].max
       end
       source = facade.records.nil? || facade.records.empty? ? (@records || []) : facade.records
+      # Высоты граней уже посчитаны при анализе (по bounds) — перебирать
+      # вершины на каждое движение линии больше не нужно: это и было главной
+      # причиной «тормозов» при постройке/переносе/развороте фасада.
       v_min = v_max = nil
       source.each do |record|
-        transform = record[:transform]
-        record[:face].vertices.each do |vertex|
-          point = vertex.position
-          point = point.transform(transform) unless transform.nil?
-          v = point.z
-          v_min = v if v_min.nil? || v < v_min
-          v_max = v if v_max.nil? || v > v_max
+        low = record[:v_min]
+        high = record[:v_max]
+        if low.nil? || high.nil?
+          point_bounds = record_vertex_span(record)
+          low, high = point_bounds
         end
+        next if low.nil? || high.nil?
+        v_min = low if v_min.nil? || low < v_min
+        v_max = high if v_max.nil? || high > v_max
       end
       v_min = 0.0 if v_min.nil?
       v_max = 1.0 if v_max.nil? || v_max <= v_min
       depth = facade.depth.to_f
       { :u_min => u_min, :u_max => u_max, :v_min => v_min, :v_max => v_max,
         :d_min => depth, :d_max => depth }
+    end
+
+    # Запасной путь на случай записей без высот: высоты по вершинам грани.
+    def record_vertex_span(record)
+      transform = record[:transform]
+      low = high = nil
+      record[:face].vertices.each do |vertex|
+        point = vertex.position
+        point = point.transform(transform) unless transform.nil?
+        z = point.z
+        low = z if low.nil? || z < low
+        high = z if high.nil? || z > high
+      end
+      [low, high]
+    rescue StandardError
+      [nil, nil]
     end
 
     # Отрезок на схеме — ровно та линия, которую провёл пользователь.
@@ -285,17 +371,20 @@ module FacadeExport
     end
 
     # Развернуть фасад в другую сторону, оставив ту же линию и то же место.
+    # Сторона — это флаг facade.flip, поэтому второе нажатие «⇄» возвращает
+    # фасад в исходное положение (раньше каждый раз считалось «наружу» заново
+    # и кнопка срабатывала только один раз).
     def invert(facade)
       return nil if facade.nil?
       line = facade.line_world
       return nil if line.nil?
-      fresh = build_drawn_facade(line[0], line[1], line[2], line[3], true,
+      fresh = build_drawn_facade(line[0], line[1], line[2], line[3], !facade.flip,
                                  facade.orient, facade.ratio)
       return nil if fresh.nil?
       fresh.id = facade.id
       fresh.index = facade.index
       fresh.name = facade.name
-      fresh.page_name = renamed_page(facade.page_name, fresh.normal)
+      fresh.page_name = renamed_page(facade.name, fresh.normal)
       fresh.selected = facade.selected
       fresh
     end
@@ -303,11 +392,15 @@ module FacadeExport
     # Сдвинуть фасад: линия переносится, направление и пропорции остаются.
     def move(facade, x1, y1, x2, y2)
       return nil if facade.nil?
-      # Перенос — только сдвиг: сторону и пропорции сохраняем как были.
-      fresh = build_drawn_facade(x1, y1, x2, y2, false, facade.orient, facade.ratio)
+      # Перенос — только сдвиг: сторону (флаг flip) и пропорции сохраняем
+      # как были, поэтому линия никогда не «переворачивается» при переносе.
+      fresh = build_drawn_facade(x1, y1, x2, y2, facade.flip, facade.orient, facade.ratio)
       return nil if fresh.nil?
-      if (fresh.normal.x - facade.normal.x).abs + (fresh.normal.y - facade.normal.y).abs > 0.5
-        fresh = build_drawn_facade(x1, y1, x2, y2, true, facade.orient, facade.ratio)
+      # На новом месте «наружу» могло бы получиться с другой стороны —
+      # тогда просто меняем флаг, чтобы сторона осталась прежней.
+      if (fresh.normal.x - facade.normal.x).abs + (fresh.normal.y - facade.normal.y).abs > 1.0e-6
+        fresh = build_drawn_facade(x1, y1, x2, y2, !facade.flip,
+                                   facade.orient, facade.ratio)
         return nil if fresh.nil?
       end
       fresh.id = facade.id
@@ -326,11 +419,16 @@ module FacadeExport
         line = %w[x1 y1 x2 y2].map { |key| item[key].to_f }
         length = Math.sqrt((line[2] - line[0])**2 + (line[3] - line[1])**2)
         next if length < 1.0e-6
-        facade = build_drawn_facade(line[0], line[1], line[2], line[3], false,
+        # 0 — это тоже «истина» в Ruby, поэтому читаем строго.
+        stored_flip = item['flip']
+        flip = stored_flip == true || stored_flip.to_s == 'true' ||
+               stored_flip.to_s == '1'
+        facade = build_drawn_facade(line[0], line[1], line[2], line[3], flip,
                                     item['orient'], item['ratio'])
         next if facade.nil?
-        # Сторону берём из файла: если авто-выбор дал другую, разворачиваем.
-        if item['nx'] && item['ny']
+        # Старые файлы хранили только нормаль — по ней и восстанавливаем
+        # сторону, чтобы нарисованный фасад выглядел так же, как его оставили.
+        if !item.key?('flip') && item['nx'] && item['ny']
           dot = facade.normal.x * item['nx'].to_f + facade.normal.y * item['ny'].to_f
           if dot < 0.0
             facade = build_drawn_facade(line[0], line[1], line[2], line[3], true,
@@ -339,30 +437,57 @@ module FacadeExport
           end
         end
         facade.id = item['id'].to_i
+        facade.index = item['index'].to_i
         name = item['name'].to_s.strip
         facade.name = name unless name.empty?
         list << facade
       end
-      renumber!(list)
+      assign_numbers!(list)
       list
     end
 
-    # Нумерация по факту: 1..N в том порядке, в каком фасады лежат в списке.
-    # Удалили восемь, нарисовали новый — он первый, а не девятый.
-    def renumber!(facades)
+    # Свободный номер фасада — самый маленький из 1, 2, 3…, которого ещё нет
+    # в списке. Поэтому уже первый нарисованный фасад — «Фасад 1», а не
+    # «Фасад 9»: номера не зависят ни от анализа модели, ни от истории.
+    def next_free_index(facades)
+      used = Array(facades).map { |facade| facade.index.to_i }
+      number = 1
+      number += 1 while used.include?(number)
+      number
+    end
+
+    # Привести список в порядок: номера уникальны и идут по возрастанию,
+    # имена по умолчанию («Фасад N») соответствуют номеру. Номера, которые
+    # пользователь уже видел, не меняются — освободившийся номер достанется
+    # следующему нарисованному фасаду.
+    def assign_numbers!(facades)
+      list = Array(facades)
       prefix = @settings.auto_val('scene_prefix').to_s.strip
       prefix = 'Фасад' if prefix.empty?
       pattern = /\A#{Regexp.escape(prefix)} \d+\z/
-      Array(facades).each_with_index do |facade, position|
-        facade.index = position + 1
+      taken = {}
+      list.each do |facade|
+        number = facade.index.to_i
+        next if number <= 0 || taken[number]
+        taken[number] = facade
+      end
+      list.each do |facade|
+        number = facade.index.to_i
+        next if number.positive? && taken[number].equal?(facade)
+        facade.index = next_free_index(taken.values)
+        taken[facade.index] = facade
+      end
+      list.sort_by! { |facade| facade.index }
+      list.each do |facade|
         name = facade.name.to_s.strip
-        if name.empty? || name =~ pattern
-          facade.name = "#{prefix} #{facade.index}"
-        end
+        facade.name = "#{prefix} #{facade.index}" if name.empty? || name =~ pattern
         facade.page_name = renamed_page(facade.name, facade.normal)
       end
-      facades
+      list
     end
+
+    # Обратная совместимость: раньше перенумерация шла по порядку в списке.
+    alias renumber! assign_numbers!
 
     # Имя сцены после разворота: «Фасад 3 — юг» → «Фасад 3 — север».
     def renamed_page(name, normal)
@@ -478,16 +603,42 @@ module FacadeExport
       ny = normal.y / length
       center = bounds.center
       center = center.transform(transform) unless transform.nil?
+      span_z = bounds_span_z(bounds, transform)
       {
         :face      => face,
         :normal    => [nx, ny],
         :area      => area,
         :depth     => center.x * nx + center.y * ny,
         :plan      => plan_bbox(bounds, transform),
+        # Высоты грани — сразу из bounds: они нужны каждому нарисованному
+        # фасаду, и читать их вершинами на каждое движение линии нельзя.
+        :v_min     => span_z[0],
+        :v_max     => span_z[1],
         :transform => transform
       }
     rescue StandardError
       nil
+    end
+
+    # Нижняя и верхняя отметки грани в мировых координатах: восемь углов
+    # габаритов (дешевле, чем перебирать вершины грани).
+    def bounds_span_z(bounds, transform)
+      low = bounds.min
+      high = bounds.max
+      if transform.nil?
+        return [low.z, high.z]
+      end
+      values = []
+      [low.x, high.x].each do |x|
+        [low.y, high.y].each do |y|
+          [low.z, high.z].each do |z|
+            values << Geom::Point3d.new(x, y, z).transform(transform).z
+          end
+        end
+      end
+      [values.min, values.max]
+    rescue StandardError
+      [low.z, high.z]
     end
 
     # Габариты грани в плане (мировые координаты).
@@ -510,82 +661,7 @@ module FacadeExport
       nil
     end
 
-    # ------------------------------------------------------------- кластеры
-
-    # Группировка по нормали И по глубине плоскости.
-    def cluster_faces(records)
-      depth_tol = depth_tolerance(records)
-      groups = []
-      records.each do |record|
-        target = nil
-        groups.each do |group|
-          if group_accepts?(group, record, depth_tol)
-            target = group
-            break
-          end
-        end
-        if target
-          add_to_group(target, record)
-        else
-          groups << new_group(record)
-        end
-      end
-      groups.reject! { |group| group[:area] <= 0.0 }
-      return [] if groups.empty?
-      split_runs(groups)
-    end
-
-    # Одна плоскость — ещё не один фасад: две параллельные стены в разных
-    # концах здания лежат в одной плоскости, но фасадов два. Поэтому группы
-    # режутся на сплошные участки вдоль стены.
-    def split_runs(groups)
-      gap = run_gap
-      runs = []
-      groups.each do |group|
-        right = [-group[:ny], group[:nx]]
-        entries = group[:records].map do |record|
-          [record_u_range(record, right), record]
-        end
-        entries.sort_by! { |(range, _record)| range ? range[0] : 0.0 }
-        current = nil
-        entries.each do |(range, record)|
-          if !current.nil? && !range.nil? && (range[0] - current[:u_max]) <= gap
-            current[:records] << record
-            current[:area] += record[:area]
-            current[:u_max] = range[1] if range[1] > current[:u_max]
-            current[:u_min] = range[0] if range[0] < current[:u_min]
-          else
-            current = {
-              :area    => record[:area],
-              :nx      => group[:nx],
-              :ny      => group[:ny],
-              :depth   => group[:depth],
-              :right   => right,
-              :records => [record],
-              :u_min   => range ? range[0] : 0.0,
-              :u_max   => range ? range[1] : 0.0
-            }
-            runs << current
-          end
-        end
-      end
-      runs.reject { |run| run[:area] <= 0.0 }
-    end
-
-    # Разрыв, после которого стена считается другой: примерно две клетки схемы.
-    def run_gap
-      xs = []
-      ys = []
-      (@records || []).each do |record|
-        box = record[:plan]
-        next if box.nil?
-        xs << box[0] << box[2]
-        ys << box[1] << box[3]
-      end
-      return MIN_DEPTH_TOL if xs.empty?
-      span = [xs.max - xs.min, ys.max - ys.min, 1.0].max
-      [span / PLAN_GRID * 2.0, 1.0].max
-    end
+    # ------------------------------------------------------------- полосы
 
     # Интервал вдоль стены, который занимает грань.
     def record_u_range(record, right)
@@ -597,56 +673,6 @@ module FacadeExport
       [us.min, us.max]
     end
 
-    def new_group(record)
-      {
-        :area    => record[:area],
-        :vx      => record[:normal][0] * record[:area],
-        :vy      => record[:normal][1] * record[:area],
-        :depth   => record[:depth],
-        :nx      => record[:normal][0],
-        :ny      => record[:normal][1],
-        :records => [record]
-      }
-    end
-
-    def add_to_group(group, record)
-      group[:area] += record[:area]
-      group[:vx] += record[:normal][0] * record[:area]
-      group[:vy] += record[:normal][1] * record[:area]
-      length = Math.sqrt(group[:vx]**2 + group[:vy]**2)
-      if length > 1.0e-9
-        group[:nx] = group[:vx] / length
-        group[:ny] = group[:vy] / length
-      end
-      group[:depth] = (group[:depth] * (group[:records].length) + record[:depth]) /
-                      (group[:records].length + 1)
-      group[:records] << record
-    end
-
-    def group_accepts?(group, record, depth_tol)
-      dot = group[:nx] * record[:normal][0] + group[:ny] * record[:normal][1]
-      return false if dot < COS_TOL
-      (record[:depth] - group[:depth]).abs <= depth_tol
-    end
-
-    # Допуск по глубине: стены одной плоскости почти совпадают по смещению,
-    # а внешняя и внутренняя стена двора — нет.
-    def depth_tolerance(records)
-      xs = []
-      ys = []
-      records.each do |record|
-        box = record[:plan]
-        next if box.nil?
-        xs << box[0] << box[2]
-        ys << box[1] << box[3]
-      end
-      return MIN_DEPTH_TOL if xs.empty?
-      diagonal = Math.sqrt((xs.max - xs.min)**2 + (ys.max - ys.min)**2)
-      tolerance = diagonal * DEPTH_TOL
-      tolerance < MIN_DEPTH_TOL ? MIN_DEPTH_TOL : tolerance
-    end
-
-    # Азимут горизонтального вектора в градусах 0..360 (0 — +X).
     def azimuth(vector)
       x = vector.is_a?(Array) ? vector[0] : vector.x
       y = vector.is_a?(Array) ? vector[1] : vector.y
@@ -865,18 +891,19 @@ module FacadeExport
       if export_settings['height'].to_i.positive?
         return [longest, export_settings['height'].to_i]
       end
-      pair = Config.auto_ratio(ratio)
-      if pair.nil?
-        # «авто» — кадр по пропорциям самой геометрии фасада.
-        w = facade_width.to_f
-        h = facade_height.to_f
-        pair = (w.positive? && h.positive?) ? [w, h] : [4.0, 3.0]
+      key = Config.auto_orient(orient)
+      if ratio.nil? && facade_width.to_f.positive? && facade_height.to_f.positive?
+        # Пропорция не задана вовсе — кадр по пропорциям самой геометрии
+        # фасада (внутренний вызов; в окне пропорция всегда выбрана).
+        pair = [facade_width.to_f, facade_height.to_f]
+      else
+        pair = Config.auto_ratio(ratio, key)
       end
+      pair = Config.auto_ratio(Config.auto_default_ratio(key), key) if pair.nil?
       long = [pair[0].to_f, pair[1].to_f].max
       short = [pair[0].to_f, pair[1].to_f].min
       long = 1.0 if long <= 0.0
       side = [[(longest * short / long).round, Config::MIN_IMAGE_SIDE].max, longest].min
-      key = Config.auto_orient(orient)
       case key
       when 'v'  then [side, longest]
       when 'sq' then [longest, longest]
@@ -936,10 +963,21 @@ module FacadeExport
     # --------------------------------------------------- плоскости и сцены
 
     # Точка и нормаль секущей плоскости в координатах контекста.
-    # Плоскость стоит РОВНО на нарисованной линии (чуть со стороны камеры,
-    # чтобы грань стены не оказалась в самой плоскости и не исчезла) и
-    # отсекает всё, что находится ДО линии, то есть между камерой и стеной.
-    # В кадр попадает стена и всё, что за ней.
+    #
+    # ГЛАВНОЕ ПРАВИЛО (по нему считается вся геометрия кадра):
+    #   * плоскость проходит РОВНО по нарисованной линии;
+    #   * SketchUp скрывает ту сторону, КУДА СМОТРИТ НОРМАЛЬ плоскости
+    #     (проверено и в интерфейсе: плоскость, поставленная на пол, нормалью
+    #     вверх, убирает всё, что выше, — так и получают план);
+    #   * значит нормаль плоскости = facade.normal, то есть наружу, в сторону
+    #     камеры. Тогда отрезается всё, что стоит МЕЖДУ камерой и линией,
+    #     а стена и всё, что за ней, остаются в кадре;
+    #   * камера стоит там же, куда смотрит стрелка на схеме: снаружи, лицом
+    #     к линии (direction = -normal).
+    #
+    # Плоскость сдвинута на волосок (epsilon) в сторону камеры: геометрия,
+    # лежащая ровно в плоскости сечения, в SketchUp исчезает, а сам фасад
+    # должен остаться целым.
     def section_plane_data(facade)
       ext = facade.extents || drawn_extents(facade)
       span = [(ext[:u_max] - ext[:u_min]).abs, (ext[:v_max] - ext[:v_min]).abs, 1.0].max
@@ -1013,6 +1051,9 @@ module FacadeExport
       @planes.each do |plane|
         next if plane.nil? || !plane_alive?(plane)
         hide_plane(plane, plane != facade.section_plane)
+        # Прятать плоскость мало: спрятанная плоскость продолжает резать.
+        # Поэтому все свои плоскости, кроме нужной, сначала выключаем.
+        deactivate_plane(plane) if plane != facade.section_plane
       end
       if facade.section_plane && plane_alive?(facade.section_plane)
         plane = facade.section_plane
@@ -1049,6 +1090,30 @@ module FacadeExport
         FacadeExport.log("Камера не установлена: #{e.message}")
       end
       facade
+    end
+
+    # Выключить конкретную плоскость (она перестаёт резать, но остаётся
+    # в модели — её удалит cleanup!).
+    def deactivate_plane(plane)
+      return false if plane.nil? || !plane_alive?(plane)
+      entities = begin
+        plane.parent
+      rescue StandardError
+        nil
+      end
+      current = begin
+        entities.respond_to?(:active_section_plane) ? entities.active_section_plane : nil
+      rescue StandardError
+        nil
+      end
+      return false unless current == plane
+      begin
+        entities.active_section_plane = nil
+        true
+      rescue StandardError => e
+        FacadeExport.log("Плоскость не выключена: #{e.message}")
+        false
+      end
     end
 
     # Сцены создаются ПОСЛЕ экспорта: файлы уже записаны, и сбой со сценами

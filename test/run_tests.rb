@@ -1753,18 +1753,117 @@ list = []
   facade.id = i + 1
   list << facade
 end
-numbering.renumber!(list)
+numbering.assign_numbers!(list)
 check('Нумерация идёт по порядку 1..4', list.map(&:index) == [1, 2, 3, 4],
       list.map(&:index).inspect)
-list.delete_at(0)
-numbering.renumber!(list)
-check('После удаления первого нумерация снова с 1', list.map(&:index) == [1, 2, 3],
+check('Новый фасад получает первый свободный номер',
+      numbering.next_free_index(list) == 5, numbering.next_free_index(list))
+list.delete_at(1)
+numbering.assign_numbers!(list)
+check('После удаления номера не переезжают', list.map(&:index) == [1, 3, 4],
       list.map(&:index).inspect)
+check('Освободившийся номер достаётся следующему фасаду',
+      numbering.next_free_index(list) == 2, numbering.next_free_index(list))
 check('Имена по умолчанию следуют за номером',
-      list.map(&:name) == ['Фасад 1', 'Фасад 2', 'Фасад 3'], list.map(&:name).inspect)
+      list.map(&:name) == ['Фасад 1', 'Фасад 3', 'Фасад 4'], list.map(&:name).inspect)
 list[0].name = 'Свой фасад'
-numbering.renumber!(list)
+numbering.assign_numbers!(list)
 check('Своё имя при перенумерации не затирается', list[0].name == 'Свой фасад', list[0].name)
+# Пустой список — новый фасад первый, а не девятый.
+check('Без фасадов новый номер — 1', numbering.next_free_index([]) == 1,
+      numbering.next_free_index([]).inspect)
+
+section 'Авто-фасады: магнит, сторона и скорость'
+
+# Магнит сильнее: линия под 13° ещё доворачивается до стены.
+fresh_settings
+model = box_facade_model
+magnet_model = FacadeExport::AutoFacades.new(model, FacadeExport.settings)
+magnet_model.detect
+snapped = magnet_model.facade_from_line(-200.0, -200.0, 1400.0, -130.0)
+check('Линия под 13° магнитится к стене',
+      (snapped.line_world[3] - snapped.line_world[1]).abs < 0.001,
+      snapped.line_world.inspect)
+check('Допуск магнита — 14°, а не 10°',
+      FacadeExport::AutoFacades::SNAP_TOL >= 14.0)
+
+# Магнитят только главные плоскости: мелкий элемент под 35° не создаёт
+# свой магнит рядом с фасадом под 30°, но и не сбивает направление стены.
+fresh_settings
+model = new_model
+model.entities.clear
+add_rotated_box_faces(model.entities, 1200, 800, 600, 30)
+# Мелкий «пилон» под 35° и площадью в сотые доли от стены.
+tiny = add_rotated_box_faces(model.entities, 20, 20, 600, 35, 600, 300)
+magnets_only = FacadeExport::AutoFacades.new(model, FacadeExport.settings)
+magnets_only.detect
+angles = magnets_only.magnet_angles
+check('Главное направление стен — в магнитах', angles.any? { |a| (a - 30.0).abs < 1.0 },
+      angles.inspect)
+check('Мелкий элемент под своим углом магнит не создаёт',
+      angles.none? { |a| (a - 65.0).abs < 1.0 } && angles.none? { |a| (a - 125.0).abs < 1.0 },
+      angles.inspect)
+check('Магнитов немного (главные плоскости, а не каждый элемент)',
+      angles.length <= 4, angles.inspect)
+
+# Разворот: второе нажатие возвращает исходную сторону.
+fresh_settings
+model = box_facade_model
+flip_model = FacadeExport::AutoFacades.new(model, FacadeExport.settings)
+flip_model.detect
+plain = flip_model.facade_from_line(-200.0, -200.0, 1400.0, -200.0)
+plain.id = 1
+plain.index = 1
+once = flip_model.invert(plain)
+twice = flip_model.invert(once)
+check('Первый разворот меняет сторону',
+      (once.normal.y - plain.normal.y).abs > 0.5, [plain.normal.y, once.normal.y].inspect)
+check('Второй разворот возвращает исходную сторону',
+      (twice.normal.y - plain.normal.y).abs < 1.0e-9,
+      [plain.normal.y, twice.normal.y].inspect)
+check('Флаг стороны переключается туда-обратно',
+      plain.flip == false && once.flip == true && twice.flip == false,
+      [plain.flip, once.flip, twice.flip].inspect)
+check('Разворот не теряет линию', twice.line_world == plain.line_world)
+third = flip_model.invert(twice)
+check('И третий разворот тоже работает',
+      (third.normal.y - once.normal.y).abs < 1.0e-9, third.normal.y.inspect)
+
+# Перенос никогда не переворачивает фасад, даже если «наружу» на новом
+# месте вышло бы с другой стороны.
+moved_far = flip_model.move(plain, -200.0, 400.0, 1400.0, 400.0)
+check('Перенос сохраняет сторону фасада',
+      moved_far && (moved_far.normal.y - plain.normal.y).abs < 1.0e-9,
+      moved_far && [plain.normal.y, moved_far.normal.y].inspect)
+moved_flipped = flip_model.move(once, -200.0, 400.0, 1400.0, 400.0)
+check('Перенос развёрнутого фасада тоже сохраняет его сторону',
+      moved_flipped && (moved_flipped.normal.y - once.normal.y).abs < 1.0e-9,
+      moved_flipped && [once.normal.y, moved_flipped.normal.y].inspect)
+
+# Скорость: при постройке и переносе линии вершины граней не читаются
+# (раньше именно этот перебор и тормозил работу).
+model.entities.each { |e| e.reset_vertex_calls if e.respond_to?(:reset_vertex_calls) }
+fast_model = FacadeExport::AutoFacades.new(model, FacadeExport.settings)
+fast_model.detect
+model.entities.each { |e| e.reset_vertex_calls if e.respond_to?(:reset_vertex_calls) }
+fast = fast_model.facade_from_line(-200.0, -200.0, 1400.0, -200.0)
+fast.id = 1
+fast_model.move(fast, -200.0, 100.0, 1400.0, 100.0)
+fast_model.invert(fast)
+calls = model.entities.select { |e| e.respond_to?(:vertex_calls) }
+                 .map { |e| e.vertex_calls.to_i }
+check('Линия и разворот строятся без перебора вершин', calls.all?(&:zero?),
+      calls.inspect)
+check('Высота фасада при этом верная (600)', (fast.extents[:v_max] - fast.extents[:v_min]).round == 600,
+      fast.extents.inspect)
+
+# Ограничения на число нарисованных фасадов больше нет.
+fresh_settings
+model = box_facade_model
+many_detector = FacadeExport::AutoFacades.new(model, FacadeExport.settings)
+many_detector.detect
+check('В конфиге нет предела фасадов',
+      !FacadeExport::Config.const_defined?(:MAX_AUTO_FACADES))
 
 section 'Авто-фасады: кадр, пропорции и сечения'
 
@@ -1772,8 +1871,8 @@ fresh_settings
 model = box_facade_model
 sizer = FacadeExport::AutoFacades.new(model, FacadeExport.settings)
 sizer.detect
-default_size = FacadeExport::AutoFacades.image_size('h', '3:4', FacadeExport.settings.export)
-check('По умолчанию горизонтальное 3:4 → 9999×7499', default_size == [9999, 7499], default_size.inspect)
+default_size = FacadeExport::AutoFacades.image_size('h', '4:3', FacadeExport.settings.export)
+check('По умолчанию горизонтальное 4:3 → 9999×7499', default_size == [9999, 7499], default_size.inspect)
 check('Вертикальное 3:4 → 7499×9999',
       FacadeExport::AutoFacades.image_size('v', '3:4', FacadeExport.settings.export) == [7499, 9999])
 check('Квадрат — 9999×9999',
@@ -1787,10 +1886,26 @@ check('В списке пропорций есть 3:1 и 2:1',
       FacadeExport::Config::AUTO_RATIOS.key?('3:1') && FacadeExport::Config::AUTO_RATIOS.key?('2:1'))
 check('Есть выбор ориентации: горизонт/вертикаль/квадрат',
       FacadeExport::Config::AUTO_ORIENTS.keys.sort == %w[h sq v])
-check('Пропорции по умолчанию — 3:4', FacadeExport::Config::AUTO_DEFAULT_RATIO == '3:4')
+check('Пропорции по умолчанию — 4:3', FacadeExport::Config::AUTO_DEFAULT_RATIO == '4:3')
 check('Ориентация по умолчанию — горизонтальная', FacadeExport::Config::AUTO_DEFAULT_ORIENT == 'h')
-auto_size = FacadeExport::AutoFacades.image_size('h', 'авто', FacadeExport.settings.export, 1200.0, 600.0)
-check('«авто» — по пропорциям фасада', (auto_size[1] - 5000).abs <= 1, auto_size.inspect)
+auto_size = FacadeExport::AutoFacades.image_size('h', nil, FacadeExport.settings.export, 1200.0, 600.0)
+check('Без пропорции — кадр по пропорциям фасада', (auto_size[1] - 5000).abs <= 1, auto_size.inspect)
+check('Списки пропорций не пересекаются: у горизонтального только широкие',
+      FacadeExport::Config.auto_ratios_for('h').keys.all? { |k| k.split(':').map(&:to_i)[0] > k.split(':').map(&:to_i)[1] },
+      FacadeExport::Config.auto_ratios_for('h').keys.inspect)
+check('У вертикального только высокие пары',
+      FacadeExport::Config.auto_ratios_for('v').keys.all? { |k| k.split(':').map(&:to_i)[0] < k.split(':').map(&:to_i)[1] },
+      FacadeExport::Config.auto_ratios_for('v').keys.inspect)
+check('В горизонтальном списке нет 16:9 рядом с 9:16',
+      !FacadeExport::Config.auto_ratios_for('h').key?('9:16') &&
+      !FacadeExport::Config.auto_ratios_for('v').key?('16:9'))
+check('У квадрата единственная пропорция — 1:1',
+      FacadeExport::Config.auto_ratios_for('sq').keys == ['1:1'])
+check('Вертикальная пара у горизонтального кадра заменяется на 4:3',
+      FacadeExport::Config.auto_ratio_name('9:16', 'h') == '4:3',
+      FacadeExport::Config.auto_ratio_name('9:16', 'h'))
+check('Широкая пара у вертикального кадра заменяется на 3:4',
+      FacadeExport::Config.auto_ratio_name('16:9', 'v') == '3:4')
 
 cam_facades = [
   sizer.facade_from_line(-200.0, -200.0, 1400.0, -200.0),
@@ -1826,6 +1941,37 @@ check('Плоскость стоит на линии (чуть со сторон
         depth > f.depth && extra < 25.0
       end,
       cam_facades.map { |f| (f.section_plane.point.y).round(2) }.inspect)
+# Плоскость проходит ровно по нарисованной линии (на волосок в сторону
+# камеры), а камера стоит там, куда смотрит стрелка: снаружи, лицом к линии.
+cam_facades.each do |facade|
+  plane = facade.section_plane
+  line = facade.line_world
+  point = plane.point
+  # Ближайшая к точке плоскости точка нарисованной линии.
+  ux = line[2] - line[0]
+  uy = line[3] - line[1]
+  length = Math.sqrt(ux * ux + uy * uy)
+  ux /= length
+  uy /= length
+  to_line = (point.x - line[0]) * ux + (point.y - line[1]) * uy
+  foot = [line[0] + ux * to_line, line[1] + uy * to_line]
+  offset = Math.sqrt((point.x - foot[0])**2 + (point.y - foot[1])**2)
+  span = [(facade.extents[:u_max] - facade.extents[:u_min]).abs,
+          (facade.extents[:v_max] - facade.extents[:v_min]).abs, 1.0].max
+  check("Плоскость стоит на линии (фасад #{facade.index}): смещение — волосок",
+        offset <= span * 0.002 + 0.2, [offset.round(3), (span * 0.002).round(3)].inspect)
+  check("Плоскость смещена в сторону камеры, а не в здание (фасад #{facade.index})",
+        (point.x - foot[0]) * facade.normal.x + (point.y - foot[1]) * facade.normal.y > 0.0,
+        offset.round(4))
+  check("Камера стоит со стороны стрелки (фасад #{facade.index})",
+        facade.camera.eye.x * facade.normal.x + facade.camera.eye.y * facade.normal.y >
+        facade.depth,
+        [facade.camera.eye.x.round(2), facade.camera.eye.y.round(2), facade.depth.round(2)].inspect)
+  check("Направление взгляда камеры — от стрелки к линии (фасад #{facade.index})",
+        (facade.camera.target.x - facade.camera.eye.x) * facade.normal.x +
+        (facade.camera.target.y - facade.camera.eye.y) * facade.normal.y < 0.0)
+end
+
 check('Нормаль плоскости смотрит на камеру — режется всё перед линией',
       cam_facades.all? do |f|
         n = f.section_plane.plane_normal
@@ -1884,7 +2030,10 @@ saved_list[0].id = 1
 saved_list[1].id = 2
 saved_list[1].name = 'Северный'
 saved_list[0].orient = 'v'
-saved_list[0].ratio = '16:9'
+saved_list[0].ratio = '9:16'
+# Разворачиваем фасад по-настоящему (как кнопкой «⇄») — сторона должна
+# сохраниться в файле и вернуться после повторного открытия.
+saved_list[0] = saver.invert(saved_list[0])
 saver.renumber!(saved_list)
 FacadeExport::AutoExport.save_drawn(saved_list, model)
 stored = model.get_attribute('FacadeExport', 'auto_facades', '')
@@ -1903,11 +2052,11 @@ check('Восстановлены обе линии',
       restored.map(&:line_world) ==
         [saved_list[0].line_world, saved_list[1].line_world],
       restored.map(&:line_world).inspect)
-check('Восстановлено направление фасада',
+check('Восстановлена сторона фасада (флаг разворота)',
       (restored[0].normal.y - saved_list[0].normal.y).abs < 1.0e-6,
       [restored[0].normal.y, saved_list[0].normal.y].inspect)
 check('Восстановлены пропорции и ориентация',
-      restored[0].orient == 'v' && restored[0].ratio == '16:9',
+      restored[0].orient == 'v' && restored[0].ratio == '9:16',
       [restored[0].orient, restored[0].ratio].inspect)
 check('Восстановлено имя', restored[1].name == 'Северный', restored[1].name)
 
@@ -1932,12 +2081,18 @@ UI.savepanel_result = File.join(OUT_ROOT, 'Рисунок.png')
 payload = FacadeExport::AutoExport.start
 check('В окне нет заготовленных фасадов', payload['facades'].empty?, payload['facades'].length)
 check('Окно получает магниты', payload['magnets'].is_a?(Array) && payload['magnets'].any?)
-check('Окно получает варианты ориентации и пропорций',
-      payload['orients'].length == 3 && payload['ratios'].any? { |pair| pair[0] == '3:1' })
-check('По умолчанию в окно отдано «горизонтальное, 3:4»',
-      payload['defaultOrient'] == 'h' && payload['defaultRatio'] == '3:4',
+check('Окно получает варианты ориентации', payload['orients'].length == 3)
+check('Пропорции в окне разложены по ориентации',
+      payload['ratios'].keys.sort == %w[h sq v] &&
+      payload['ratios']['h'].any? { |pair| pair[0] == '3:1' } &&
+      payload['ratios']['v'].any? { |pair| pair[0] == '9:16' },
+      payload['ratios'].inspect)
+check('В горизонтальном списке окна нет вертикальных пар',
+      payload['ratios']['h'].map(&:first).none? { |v| v.include?('9:16') })
+check('По умолчанию в окно отдано «горизонтальное, 4:3»',
+      payload['defaultOrient'] == 'h' && payload['defaultRatio'] == '4:3',
       [payload['defaultOrient'], payload['defaultRatio']].inspect)
-check('В окне есть предел фасадов (30)', payload['maxFacades'] == 30, payload['maxFacades'])
+check('Предела числа фасадов больше нет', !payload.key?('maxFacades'), payload.keys.inspect)
 
 added_south = FacadeExport::AutoExport.add_facade(
   'x1' => -200.0, 'y1' => -200.0, 'x2' => 1400.0, 'y2' => -200.0
@@ -1976,8 +2131,8 @@ refresh = dialog.scripts.find { |script| script.include?('FacadeExportAuto.setDa
 check('После удаления окно получает полный набор данных', !refresh.nil?,
       dialog.scripts.length)
 refreshed = JSON.parse(JSON.parse(refresh[/setData\((.*)\);\z/, 1].to_s))
-check('В перерисованном окне номера начинаются с 1',
-      refreshed['facades'].map { |f| f['index'] } == [1],
+check('В перерисованном окне остался фасад со своим номером',
+      refreshed['facades'].map { |f| f['index'] } == [2],
       refreshed['facades'].map { |f| f['index'] }.inspect)
 check('В перерисованном окне есть линия оставшегося фасада',
       refreshed['facades'].first && refreshed['facades'].first['segment'].is_a?(Hash))
@@ -2070,7 +2225,10 @@ check('Без вертикальных стен — ноль фасадов, б�
       only_roof[:facades].empty?, only_roof[:facades].length)
 check('Схема при нуле стен всё равно строится',
       (only_roof[:plan]['polygons'] || []).any?)
-check('Магнит без стен — оси модели', only_roof[:magnets] == [0.0, 90.0],
+check('Магнит без стен — оси модели',
+      only_roof[:magnets].length == 2 &&
+      only_roof[:magnets].any? { |(x, y)| x.abs > 0.99 && y.abs < 0.01 } &&
+      only_roof[:magnets].any? { |(x, y)| y.abs > 0.99 && x.abs < 0.01 },
       only_roof[:magnets].inspect)
 
 # В группе экспортируется только группа: остальное на время съёмки скрыто.
@@ -2117,9 +2275,9 @@ auto = FacadeExport.settings.auto
 check('По умолчанию сцены временные (удаляются)', auto['delete_scenes'] == true)
 check('По умолчанию сечение подрезает', auto['cut_sections'] == true)
 check('По умолчанию ориентация — горизонтальная', auto['orient'] == 'h', auto['orient'].inspect)
-check('По умолчанию пропорции — 3:4', auto['ratio'] == '3:4', auto['ratio'].inspect)
+check('По умолчанию пропорции — 4:3', auto['ratio'] == '4:3', auto['ratio'].inspect)
 check('По умолчанию имя начинается с «Фасад»', auto['scene_prefix'] == 'Фасад')
-check('Максимум фасадов по умолчанию — 30', auto['max_facades'] == 30, auto['max_facades'].inspect)
+check('Предела фасадов в настройках нет', !auto.key?('max_facades'), auto.keys.inspect)
 check('Старые ключи (aspect/min_area) убраны', !auto.key?('aspect') && !auto.key?('min_area'),
       auto.keys.inspect)
 
@@ -2128,9 +2286,7 @@ FacadeExport.settings.replace!(
 )
 auto = FacadeExport.settings.auto
 check('Битое значение ориентации заменяется на горизонтальное', auto['orient'] == 'h')
-check('Битое значение пропорций заменяется на 3:4', auto['ratio'] == '3:4')
-check('max_facades не меньше 1', auto['max_facades'].to_i >= 1, auto['max_facades'].inspect)
-check('max_facades не больше 30', auto['max_facades'].to_i <= 30, auto['max_facades'].inspect)
+check('Битое значение пропорций заменяется на 4:3', auto['ratio'] == '4:3')
 check('Пустое имя сцены заменяется на «Фасад»', auto['scene_prefix'] == 'Фасад')
 
 fresh_settings

@@ -49,21 +49,23 @@ const plan = {
 };
 
 const orients = [["h", "горизонтальное"], ["v", "вертикальное"], ["sq", "квадрат"]];
-const ratios = [
-  ["4:3", "4:3"], ["3:2", "3:2"], ["16:9", "16:9"], ["2:1", "2:1"], ["3:1", "3:1"],
-  ["1:1", "1:1"], ["3:4", "3:4"], ["2:3", "2:3"], ["9:16", "9:16"], ["1:2", "1:2"],
-  ["1:3", "1:3"], ["авто", "авто — по фасаду"],
-];
+// Пропорции приходят разложенными по ориентации: широкие — горизонтальному
+// кадру, высокие — вертикальному, у квадрата единственная 1:1.
+const ratios = {
+  h: [["4:3", "4:3"], ["3:2", "3:2"], ["16:9", "16:9"], ["2:1", "2:1"], ["3:1", "3:1"]],
+  v: [["3:4", "3:4"], ["2:3", "2:3"], ["9:16", "9:16"], ["1:2", "1:2"], ["1:3", "1:3"]],
+  sq: [["1:1", "1:1"]],
+};
 
 const base = {
   scope: "model",
   plan,
-  magnets: [0, 90],
+  magnets: [[0, -1], [1, 0]],
+  magnetTol: 14,
   orients,
   ratios,
   defaultOrient: "h",
-  defaultRatio: "3:4",
-  maxFacades: 30,
+  defaultRatio: "4:3",
   origin: { x: 0, y: 0 },
   span: 1000,
   longestSide: 9999,
@@ -75,19 +77,19 @@ const base = {
 // Фасады, которые пользователь уже нарисовал (их вернул Ruby из модели).
 const drawn = [
   {
-    id: 1, index: 1, name: "Фасад 1", orient: "h", ratio: "3:4", selected: true,
+    id: 1, index: 1, name: "Фасад 1", orient: "h", ratio: "4:3", selected: true,
     segment: { from: [90, 120], to: [910, 120], normal: [0, -1], area: 0 },
   },
   {
-    id: 2, index: 2, name: "Фасад 2", orient: "h", ratio: "3:4", selected: true,
+    id: 2, index: 2, name: "Фасад 2", orient: "h", ratio: "4:3", selected: true,
     segment: { from: [880, 150], to: [880, 880], normal: [1, 0], area: 0 },
   },
   {
-    id: 3, index: 3, name: "Фасад 3", orient: "h", ratio: "3:4", selected: true,
+    id: 3, index: 3, name: "Фасад 3", orient: "h", ratio: "4:3", selected: true,
     segment: { from: [90, 880], to: [910, 880], normal: [0, 1], area: 0 },
   },
   {
-    id: 4, index: 4, name: "Фасад 4", orient: "h", ratio: "3:4", selected: true,
+    id: 4, index: 4, name: "Фасад 4", orient: "h", ratio: "4:3", selected: true,
     segment: { from: [120, 150], to: [120, 880], normal: [-1, 0], area: 0 },
   },
 ];
@@ -184,16 +186,44 @@ check("Внутренний двор на схеме пустой",
   window.FacadeExportAuto._debug.insideBuilding(500, 620) === false);
 check("Двор не залит контуром",
   window.FacadeExportAuto._debug.insideBuilding(500, 300) === true);
-check("Линия тонкая: 14 px у выбранного фасада", walls("#e03131", 14).length === 4,
-  walls("#e03131", 14).length);
-check("Толстых линий 22 px больше нет", walls("#e03131", 22).length === 0);
-check("Стрелка — треугольник у каждой линии",
-  doc.querySelectorAll("#canvas svg path.arrow").length === 4,
+check("Линия тонкая: 10 px у выбранного фасада", walls("#e03131", 10).length === 4,
+  walls("#e03131", 10).length);
+check("Толстых линий 14 и 22 px больше нет",
+  walls("#e03131", 14).length === 0 && walls("#e03131", 22).length === 0);
+check("Стрелка — только треугольник, без древка",
+  doc.querySelectorAll("#canvas svg path.arrow").length === 4 &&
+  !doc.querySelector("#canvas svg line.arrow-shaft"),
   doc.querySelectorAll("#canvas svg path.arrow").length);
-check("Кружок с номером стал больше (r = 19)", (() => {
+check("Кружок с номером стал больше (r = 23)", (() => {
   const c = doc.querySelector('#canvas svg circle[stroke="#e03131"]');
-  return c && Number(c.getAttribute("r")) === 19;
+  return c && Number(c.getAttribute("r")) === 23;
 })(), doc.querySelector('#canvas svg circle[stroke="#e03131"]')?.getAttribute("r"));
+check("Цифра в кружке крупнее (font-size = 24)", (() => {
+  const t = doc.querySelector("#canvas svg text");
+  return t && Number(t.getAttribute("font-size")) === 24;
+})(), doc.querySelector("#canvas svg text")?.getAttribute("font-size"));
+const badgeGaps = [...doc.querySelectorAll("#canvas svg .badge-g")].map((g) => {
+  const position = g.getAttribute("data-index");
+  const line = doc.querySelector(`#canvas svg .wall-hit[data-index="${position}"] line`);
+  const circle = g.querySelector("circle");
+  const x1 = Number(line.getAttribute("x1"));
+  const y1 = Number(line.getAttribute("y1"));
+  const x2 = Number(line.getAttribute("x2"));
+  const y2 = Number(line.getAttribute("y2"));
+  const x = Number(circle.getAttribute("cx"));
+  const y = Number(circle.getAttribute("cy"));
+  const vx = x2 - x1;
+  const vy = y2 - y1;
+  const len = Math.sqrt(vx * vx + vy * vy) || 1;
+  // Расстояние от центра кружка до своей линии.
+  const t = Math.max(0, Math.min(1, ((x - x1) * vx + (y - y1) * vy) / (len * len)));
+  return Math.hypot(x - (x1 + vx * t), y - (y1 + vy * t));
+});
+check("Кружки стоят вплотную к своим линиям (не дальше 45 px)",
+  badgeGaps.length === 4 && badgeGaps.every((d) => d <= 45),
+  badgeGaps.map((d) => d.toFixed(1)).join(","));
+check("Кружки не наезжают на линию",
+  badgeGaps.every((d) => d >= 18), badgeGaps.map((d) => d.toFixed(1)).join(","));
 check("Номер фасада на схеме", badges().length === 4 &&
   badges().map((t) => t.textContent.trim()).join(",") === "1,2,3,4",
   badges().map((t) => t.textContent.trim()).join(","));
@@ -211,55 +241,77 @@ check("Ориентация по умолчанию — горизонтальн
 check("В списке ориентаций есть вертикальная и квадрат",
   ["h", "v", "sq"].every((v) =>
     [...first.querySelectorAll('[data-role="orient"] option')].some((o) => o.value === v)));
-check("Пропорции по умолчанию — 3:4",
-  first.querySelector('[data-role="ratio"]').value === "3:4",
+check("Пропорции по умолчанию — 4:3",
+  first.querySelector('[data-role="ratio"]').value === "4:3",
   first.querySelector('[data-role="ratio"]')?.value);
-check("В списке пропорций есть 3:1 и 1:3",
-  ["3:1", "2:1", "16:9", "3:4", "9:16", "1:3"].every((v) =>
-    [...first.querySelectorAll('[data-role="ratio"] option')].some((o) => o.value === v)));
-check("Размер PNG посчитан: горизонтальное 3:4 → 9999×7499",
+const firstRatioOptions = [...first.querySelectorAll('[data-role="ratio"] option')]
+  .map((o) => o.value);
+check("У горизонтального кадра только широкие пропорции",
+  firstRatioOptions.join(",") === "4:3,3:2,16:9,2:1,3:1", firstRatioOptions.join(","));
+check("В горизонтальном списке нет вертикальных пар",
+  !firstRatioOptions.includes("9:16") && !firstRatioOptions.includes("3:4"));
+check("Размер PNG посчитан: горизонтальное 4:3 → 9999×7499",
   first.querySelector('[data-role="px"]').textContent === "9999×7499",
   first.querySelector('[data-role="px"]')?.textContent);
 check("Фасад отмечен для экспорта", !first.classList.contains("off"));
 check("Внизу — сколько нарисовано и что сцены временные",
-  footnote().includes("4 из 30") && footnote().includes("временные"), footnote());
+  footnote().includes("Нарисовано: 4") && footnote().includes("временные"), footnote());
+check("Предела фасадов в подписи больше нет", !footnote().includes("из 30"), footnote());
 
-// Ориентация и пропорции: сначала ориентация, потом пропорции.
-const second = rows()[1];
-const orientSelect = second.querySelector('[data-role="orient"]');
-const ratioSelect = second.querySelector('[data-role="ratio"]');
-orientSelect.value = "v";
-fire(orientSelect, "change");
+// Ориентация и пропорции: сначала ориентация, потом пропорции. Каждая
+// ориентация показывает только свои пары — без 16:9 рядом с 9:16.
+const setOrient = (position, value) => {
+  const select = rows()[position].querySelector('[data-role="orient"]');
+  select.value = value;
+  fire(select, "change");
+};
+const setRatio = (position, value) => {
+  const select = rows()[position].querySelector('[data-role="ratio"]');
+  select.value = value;
+  fire(select, "change");
+};
+const ratioOptions = (position) =>
+  [...rows()[position].querySelectorAll('[data-role="ratio"] option')].map((o) => o.value);
+
+setOrient(1, "v");
+check("После смены ориентации пропорция сбрасывается на 3:4",
+  rows()[1].querySelector('[data-role="ratio"]').value === "3:4",
+  rows()[1].querySelector('[data-role="ratio"]')?.value);
+check("У вертикального кадра только высокие пропорции",
+  ratioOptions(1).join(",") === "3:4,2:3,9:16,1:2,1:3", ratioOptions(1).join(","));
 check("Вертикальное 3:4 → 7499×9999",
-  second.querySelector('[data-role="px"]').textContent === "7499×9999",
-  second.querySelector('[data-role="px"]')?.textContent);
-ratioSelect.value = "9:16";
-fire(ratioSelect, "change");
+  rows()[1].querySelector('[data-role="px"]').textContent === "7499×9999",
+  rows()[1].querySelector('[data-role="px"]')?.textContent);
+setRatio(1, "9:16");
 check("Вертикальное 9:16 → 5624×9999",
-  second.querySelector('[data-role="px"]').textContent === "5624×9999",
-  second.querySelector('[data-role="px"]')?.textContent);
-orientSelect.value = "sq";
-fire(orientSelect, "change");
-check("Квадрат — 9999×9999 независимо от пропорций",
-  second.querySelector('[data-role="px"]').textContent === "9999×9999",
-  second.querySelector('[data-role="px"]')?.textContent);
-orientSelect.value = "h";
-fire(orientSelect, "change");
-ratioSelect.value = "3:1";
-fire(ratioSelect, "change");
+  rows()[1].querySelector('[data-role="px"]').textContent === "5624×9999",
+  rows()[1].querySelector('[data-role="px"]')?.textContent);
+setOrient(1, "sq");
+check("У квадрата единственная пропорция — 1:1",
+  ratioOptions(1).join(",") === "1:1", ratioOptions(1).join(","));
+check("Квадратная пропорция заблокирована",
+  rows()[1].querySelector('[data-role="ratio"]').disabled === true);
+check("Квадрат — 9999×9999",
+  rows()[1].querySelector('[data-role="px"]').textContent === "9999×9999",
+  rows()[1].querySelector('[data-role="px"]')?.textContent);
+setOrient(1, "h");
+setRatio(1, "3:1");
 check("Горизонтальное 3:1 → 9999×3333",
-  second.querySelector('[data-role="px"]').textContent === "9999×3333",
-  second.querySelector('[data-role="px"]')?.textContent);
-check("Смена ориентации не выключает фасад", !second.classList.contains("off"));
+  rows()[1].querySelector('[data-role="px"]').textContent === "9999×3333",
+  rows()[1].querySelector('[data-role="px"]')?.textContent);
+check("У горизонтального кадра пропорция снова выбирается",
+  rows()[1].querySelector('[data-role="ratio"]').disabled === false);
+check("Смена ориентации не выключает фасад", !rows()[1].classList.contains("off"));
+const second = rows()[1];
 
 // Клик по линии на схеме выключает фасад.
 const wallThird = [...doc.querySelectorAll("#canvas svg .wall-hit")]
   .find((n) => n.getAttribute("data-index") === "2");
 fire(wallThird, "click");
 check("Клик по линии выключает фасад", rows()[2].classList.contains("off"));
-check("Выключенная линия серая и тонкая", walls("#b9c1cc", 10).length === 1 &&
-  walls("#e03131", 14).length === 3,
-  [walls("#b9c1cc", 10).length, walls("#e03131", 14).length]);
+check("Выключенная линия серая и тонкая", walls("#b9c1cc", 7).length === 1 &&
+  walls("#e03131", 10).length === 3,
+  [walls("#b9c1cc", 7).length, walls("#e03131", 10).length]);
 check("Внизу пересчитано количество", footnote().includes("3 из 4") ||
   footnote().includes("Выбрано: 3"), footnote());
 
@@ -299,17 +351,27 @@ check("Длина линии при переносе сохраняется",
   Math.round(before.to[0] - before.from[0]),
   JSON.stringify(calls.moved));
 
-// Стрелка стоит по другую сторону линии и смотрит на неё.
+// Стрелка — треугольник носком к линии, по другую её сторону.
 const arrow = doc.querySelector("#canvas svg path.arrow");
 const arrowNums = arrow.getAttribute("d").match(/-?\d+/g).map(Number);
-const lineOne = doc.querySelector('#canvas svg line[stroke="#e03131"][stroke-width="14"]');
+check("Стрелка — треугольник из трёх точек",
+  (arrow.getAttribute("d").match(/[ML]/g) || []).length === 3, arrow.getAttribute("d"));
+const lineOne = doc.querySelector('#canvas svg line[stroke="#e03131"][stroke-width="10"]');
 const cy = (Number(lineOne.getAttribute("y1")) + Number(lineOne.getAttribute("y2"))) / 2;
-check("Стрелка стоит по другую сторону линии, а не поверх неё",
-  arrowNums[1] > cy && arrowNums[1] - cy < 20,
-  [arrowNums[1], cy].join(" / "));
-check("Носок стрелки ближе к линии, чем основание",
-  Math.abs(arrowNums[1] - cy) < Math.abs(arrowNums[3] - cy),
-  arrowNums.join(","));
+const tipGap = Math.abs(arrowNums[1] - cy);
+const baseGap = Math.abs(arrowNums[3] - cy);
+check("Носок стрелки почти касается линии",
+  tipGap > 0 && tipGap <= 10, [arrowNums[1], cy].join(" / "));
+check("Основание треугольника дальше от линии",
+  baseGap > tipGap + 20, [tipGap, baseGap].join(" / "));
+// Нормаль первого фасада — [0, -1], то есть на схеме вверх: там и камера,
+// туда же смотрит стрелка, а номер стоит с противоположной стороны.
+check("Стрелка стоит со стороны камеры (по нормали фасада)",
+  arrowNums[1] < cy, [arrowNums[1], cy].join(" / "));
+const firstBadgeY = Number(doc.querySelector('#canvas svg .badge-g[data-index="0"] circle')
+  .getAttribute("cy"));
+check("Номер стоит с противоположной стороны линии",
+  firstBadgeY > cy, [firstBadgeY, cy].join(" / "));
 
 // Разворот фасада: просим Ruby (там пересчитывается камера).
 let inverted = null;
@@ -375,13 +437,14 @@ check("Участки линии вне здания — красные",
 
 // Ruby вернул новый фасад: строка появляется, номер продолжает список.
 window.FacadeExportAuto.addFacade(JSON.stringify({
-  ok: true, id: 5, index: 4, name: "Фасад 4", orient: "h", ratio: "3:4", selected: true,
+  ok: true, id: 5, index: 4, name: "Фасад 4", orient: "h", ratio: "4:3", selected: true,
   segment: { from: [120, 150], to: [120, 880], normal: [-1, 0], area: 0 },
 }));
 check("Добавленный фасад появился в списке", rows().length === 4, rows().length);
 check("Добавленный фасад появился на схеме", badges().length === 4, badges().length);
 check("Добавленный фасад получил пропорции по умолчанию",
-  rows()[3].querySelector('[data-role="ratio"]').value === "3:4");
+  rows()[3].querySelector('[data-role="ratio"]').value === "4:3",
+  rows()[3].querySelector('[data-role="ratio"]')?.value);
 window.FacadeExportAuto.addFacade(JSON.stringify({
   ok: false, message: "Не удалось создать фасад по этой линии.",
 }));
@@ -398,20 +461,45 @@ check("Разворот фасада меняет направление стр�
   flipped.segment.normal[1] === -1, JSON.stringify(flipped.segment.normal));
 check("Разворот меняет ориентацию строки", flipped.orient === "v", flipped.orient);
 
-// Лимит фасадов: 30 — больше не нарисовать.
+// Предела числа нарисованных фасадов больше нет.
 const many = [];
-for (let i = 0; i < 30; i++) {
+for (let i = 0; i < 40; i++) {
   many.push({
-    id: i + 1, index: i + 1, name: `Фасад ${i + 1}`, orient: "h", ratio: "3:4",
+    id: i + 1, index: i + 1, name: `Фасад ${i + 1}`, orient: "h", ratio: "4:3",
     selected: true,
     segment: { from: [0 + i, 400], to: [40 + i, 400], normal: [0, -1], area: 0 },
   });
 }
 window.FacadeExportAuto.setData(JSON.stringify({ ...base, plan, facades: many }));
+check("Список показывает все 40 фасадов", rows().length === 40, rows().length);
+check("Про предел в подписи ни слова", !footnote().includes("из "), footnote());
 calls.drawn = null;
 window.FacadeExportAuto._draw(200, 620, 800, 620);
-check("Больше 30 фасадов нарисовать нельзя", calls.drawn === null);
-check("Пользователю сказано про предел", footnote().includes("Больше 30"), footnote());
+check("Сорок первый фасад нарисовать можно", calls.drawn !== null,
+  JSON.stringify(calls.drawn));
+
+// Магнит работает прямо во время протяжки: линия под 13° доворачивается
+// к стене ещё до отпускания кнопки — и уходит в Ruby уже ровной.
+const snapped = debug.magnetize([100, 300, 900, 300 + 800 * Math.tan(13 * Math.PI / 180)]);
+check("Линия под 13° притягивается к стене во время протяжки",
+  Math.abs(snapped.line[3] - snapped.line[1]) < 1, snapped.line.join(","));
+check("Магнит отмечен как сработавший", snapped.snapped === true);
+check("Середина линии при притяжке остаётся на месте",
+  Math.abs((snapped.line[0] + snapped.line[2]) / 2 - 500) < 1 &&
+  Math.abs((snapped.line[1] + snapped.line[3]) / 2 - 300 - 400 * Math.tan(13 * Math.PI / 180)) < 1,
+  snapped.line.join(","));
+const notSnapped = debug.magnetize([100, 300, 400, 700]);
+check("Линия под 45° не притягивается", notSnapped.snapped === false,
+  notSnapped.line.join(","));
+
+// Курсор «перетащить» над линией: видно, что фасад можно двигать.
+debug.setHover(false);
+check("Без наведения курсор обычный", !doc.getElementById("canvas").classList.contains("draggable"));
+debug.setHover(true);
+check("Над линией курсор «перетащить»",
+  doc.getElementById("canvas").classList.contains("draggable"));
+check("В стилях есть grab-курсор", html.includes("cursor: grab") && html.includes("cursor: grabbing"));
+debug.setHover(false);
 
 fire(doc.getElementById("btn-cancel"), "click");
 check("По «Отмена» вызван Ruby-callback", calls.canceled === 1);

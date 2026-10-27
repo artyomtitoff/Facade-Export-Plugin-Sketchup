@@ -238,8 +238,7 @@
     "delete_scenes": true,
     "cut_sections": true,
     "orient": "h",
-    "ratio": "3:4",
-    "max_facades": 30,
+    "ratio": "4:3",
     "scene_prefix": "Фасад",
     "create_scenes": true
   },
@@ -356,29 +355,32 @@
     ["1:1", "1:1"]
   ];
 
-  // Кадр фасада: сначала ориентация, потом пропорции. Пропорции — тот же
-  // список, что и в настройках экспорта, плюс вертикальные варианты.
-  // «авто» — кадр по пропорциям самого фасада.
+  // Кадр фасада: сначала ориентация, потом пропорции. Пропорции зависят от
+  // ориентации — у горизонтального кадра только широкие пары, у
+  // вертикального только высокие, у квадрата одна 1:1.
   var AUTO_ORIENTS = [
     ["h", "горизонтальное"],
     ["v", "вертикальное"],
     ["sq", "квадрат"]
   ];
 
-  var AUTO_RATIOS = [
-    ["4:3", "4:3"],
-    ["3:2", "3:2"],
-    ["16:9", "16:9"],
-    ["2:1", "2:1"],
-    ["3:1", "3:1"],
-    ["1:1", "1:1"],
-    ["3:4", "3:4 (по умолчанию)"],
-    ["2:3", "2:3"],
-    ["9:16", "9:16"],
-    ["1:2", "1:2"],
-    ["1:3", "1:3"],
-    ["авто", "авто — по фасаду"]
-  ];
+  var AUTO_RATIOS = {
+    h: [
+      ["4:3", "4:3 (по умолчанию)"],
+      ["3:2", "3:2"],
+      ["16:9", "16:9"],
+      ["2:1", "2:1"],
+      ["3:1", "3:1"]
+    ],
+    v: [
+      ["3:4", "3:4 (по умолчанию)"],
+      ["2:3", "2:3"],
+      ["9:16", "9:16"],
+      ["1:2", "1:2"],
+      ["1:3", "1:3"]
+    ],
+    sq: [["1:1", "1:1 (единственная)"]]
+  };
 
   var GLASS_ROWS = [
     ["main", "Основное стекло", "непрозрачность 11–89 %"],
@@ -412,6 +414,32 @@
     return String(s === null || s === undefined ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  // Пара пропорций, приведённая к ориентации: широкие — горизонтальному
+  // кадру, высокие — вертикальному, у квадрата единственная 1:1.
+  function fitRatio(orient, ratio) {
+    var key = orient === 'v' || orient === 'sq' ? orient : 'h';
+    var list = AUTO_RATIOS[key] || AUTO_RATIOS.h;
+    var keys = list.map(function (pair) { return pair[0]; });
+    if (key === 'sq') return '1:1';
+    if (keys.indexOf(ratio) >= 0) return ratio;
+    var parts = String(ratio || '').split(':');
+    var a = Number(parts[0]) || 0;
+    var b = Number(parts[1]) || 0;
+    if (!a || !b) return keys[0];
+    var swapped = (a < b) === (key === 'v') ? ratio : b + ':' + a;
+    return keys.indexOf(swapped) >= 0 ? swapped : keys[0];
+  }
+
+  function ratioOptionsFor(orient, current) {
+    var key = orient === 'v' || orient === 'sq' ? orient : 'h';
+    var list = AUTO_RATIOS[key] || AUTO_RATIOS.h;
+    var value = fitRatio(key, current);
+    return list.map(function (pair) {
+      return '<option value="' + esc(pair[0]) + '"' +
+        (pair[0] === value ? ' selected' : '') + '>' + esc(pair[1]) + '</option>';
+    }).join('');
   }
 
   function numberField(path, label, min, max, step, hint) {
@@ -529,9 +557,13 @@
     html += '<div class="grid" style="margin-top:12px">';
     html += selectField('auto.orient', 'Ориентация кадра по умолчанию', AUTO_ORIENTS,
       'Горизонтальное — кадр шире, вертикальное — выше, квадрат — равные стороны.');
-    html += selectField('auto.ratio', 'Пропорции кадра по умолчанию', AUTO_RATIOS,
-      'Пропорции применяются к выбранной ориентации. «авто» — по самому фасаду. ' +
-      'У каждого фасада в окне вывода можно поменять.');
+    // Список пропорций — только для выбранной ориентации: 16:9 рядом с 9:16
+    // не предлагается, а у «квадрата» выбора нет вовсе.
+    html += '<div class="field"><label for="auto.ratio">Пропорции кадра по умолчанию</label>' +
+      '<select id="auto.ratio" data-path="auto.ratio">' +
+      ratioOptionsFor(getPath(settings, 'auto.orient'), getPath(settings, 'auto.ratio')) +
+      '</select><div class="hint">Пропорции подстраиваются под ориентацию кадра; ' +
+      'у квадрата всегда 1:1. У каждого фасада в окне вывода можно поменять.</div></div>';
     html += textField('auto.scene_prefix', 'Начало имени сцены',
       'Имя фасада в окне: «Фасад 1».');
     html += '</div></div>';
@@ -547,11 +579,6 @@
       'к камере. В кадр попадают стена и всё, что за ней.');
     html += '</div></div>';
 
-    html += '<div class="card"><h2>Предел фасадов</h2><div class="grid">';
-    html += numberField('auto.max_facades', 'Максимум нарисованных фасадов', 1, 30, 1,
-      'По умолчанию 30 — больше линий на одной схеме рисовать не даёт.');
-    html += '<div></div>';
-    html += '</div></div>';
     html += '</section>';
     return html;
   }
@@ -788,6 +815,24 @@
     document.querySelectorAll('[data-toggle]').forEach(function (el) {
       el.addEventListener('change', function () { updateDeps(); });
     });
+
+    // Пропорции следуют за ориентацией: сменили ориентацию — список и
+    // выбранная пара обновились; у «квадрата» выбора нет вовсе.
+    var orientEl = document.querySelector('[data-path="auto.orient"]');
+    var ratioEl = document.querySelector('[data-path="auto.ratio"]');
+    function syncRatio() {
+      if (!orientEl || !ratioEl) return;
+      var key = orientEl.value;
+      var list = AUTO_RATIOS[key] || AUTO_RATIOS.h;
+      var current = fitRatio(key, ratioEl.value || getPath(settings, 'auto.ratio'));
+      ratioEl.innerHTML = ratioOptionsFor(key, current);
+      ratioEl.value = fitRatio(key, current);
+      ratioEl.disabled = list.length === 1;
+    }
+    if (orientEl && ratioEl) {
+      orientEl.addEventListener('change', syncRatio);
+      syncRatio();
+    }
 
     document.querySelectorAll('[data-path$=".title"]').forEach(function (el) {
       var path = el.getAttribute('data-path');

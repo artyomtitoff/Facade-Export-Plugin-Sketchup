@@ -15,7 +15,7 @@ module FacadeExport
     MAIN = File.join(__dir__, 'facade_export', 'main.rb')
 
     extension = SketchupExtension.new('Экспорт фасадов', MAIN)
-    extension.version     = '1.5.7'
+    extension.version     = '1.5.8'
     extension.creator     = 'Артем Титов motivate_rt'
     extension.copyright   = '© 2026 Артем Титов (motivate_rt)'
     extension.description = 'Автоматический экспорт фасадов в PNG: 4 фасада × 4 карты ' \

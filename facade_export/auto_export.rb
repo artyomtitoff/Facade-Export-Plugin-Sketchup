@@ -68,12 +68,17 @@ module FacadeExport
         'scope' => result[:scope].to_s,
         'plan' => plan_payload(result[:plan]),
         'magnets' => result[:magnets] || [],
+        # Допуск магнита: по нему окно притягивает линию ещё во время протяжки.
+        'magnetTol' => AutoFacades::SNAP_TOL,
         'orients' => Config::AUTO_ORIENTS.map { |key, title| [key, title] },
-        'ratios' => Config::AUTO_RATIOS.keys.map { |key| [key, key] } +
-                    [[Config::AUTO_RATIO_AUTO, 'авто — по фасаду']],
+        # Пропорции зависят от ориентации: у горизонтального кадра только
+        # широкие пары, у вертикального — только высокие, у квадрата одна.
+        'ratios' => Config::AUTO_ORIENTS.keys.each_with_object({}) do |key, out|
+          out[key] = Config.auto_ratios_for(key).keys.map { |ratio| [ratio, ratio] }
+        end,
         'defaultOrient' => Config.auto_orient(settings.auto_val('orient')),
-        'defaultRatio' => Config.auto_ratio_name(settings.auto_val('ratio')),
-        'maxFacades' => Config::MAX_AUTO_FACADES,
+        'defaultRatio' => Config.auto_ratio_name(settings.auto_val('ratio'),
+                                                 settings.auto_val('orient')),
         'origin' => {
           'x' => (result[:plan] && result[:plan][:min_x]).to_f,
           'y' => (result[:plan] && result[:plan][:min_y]).to_f
@@ -121,6 +126,7 @@ module FacadeExport
                      facade.page_name.to_s.split('—').last.to_s.strip,
         'orient' => facade.orient,
         'ratio' => facade.ratio,
+        'flip' => facade.flip ? true : false,
         'selected' => facade.selected ? true : false,
         'segment' => facade.segment
       }
@@ -133,8 +139,6 @@ module FacadeExport
       detector = @detector
       facades = @facades || []
       return respond_add('ok' => false, 'message' => 'Окно устарело: нажмите кнопку заново.') if detector.nil?
-      return respond_add('ok' => false, 'message' => "Больше #{Config::MAX_AUTO_FACADES} фасадов нельзя.") if
-        facades.length >= Config::MAX_AUTO_FACADES
       line = line_from_payload(data)
       return respond_add('ok' => false, 'message' => 'Линия не прочитана.') if line.nil?
       facade = nil
@@ -145,8 +149,11 @@ module FacadeExport
       end
       return respond_add('ok' => false, 'message' => 'Не удалось создать фасад по этой линии.') if facade.nil?
       facade.id = next_id(facades)
+      # Номер — самый маленький свободный: первый же нарисованный фасад
+      # называется «Фасад 1», даже если до него фасады удаляли.
+      facade.index = detector.next_free_index(facades)
       facades << facade
-      detector.renumber!(facades)
+      detector.assign_numbers!(facades)
       @facades = facades
       save_drawn(facades)
       respond_add(facade_payload(facade).merge('ok' => true))
@@ -166,6 +173,7 @@ module FacadeExport
       end
       return respond_update('ok' => false, 'message' => 'Не удалось передвинуть фасад.') if fresh.nil?
       @facades[position] = fresh
+      @detector.assign_numbers!(@facades)
       save_drawn(@facades)
       respond_update(facade_payload(fresh).merge('ok' => true))
     end
@@ -182,6 +190,7 @@ module FacadeExport
       end
       return respond_update('ok' => false, 'message' => 'Не удалось развернуть фасад.') if fresh.nil?
       @facades[position] = fresh
+      @detector.assign_numbers!(@facades)
       save_drawn(@facades)
       respond_update(facade_payload(fresh).merge('ok' => true))
     end
@@ -191,7 +200,7 @@ module FacadeExport
       facade, position, error = find_facade(data)
       return { 'ok' => false, 'message' => error } if facade.nil?
       @facades.delete_at(position)
-      @detector.renumber!(@facades)
+      @detector.assign_numbers!(@facades)
       save_drawn(@facades)
       # Номера считает Ruby — окно получает готовый список 1..N.
       begin
@@ -305,8 +314,10 @@ module FacadeExport
       line = facade.line_world || [0.0, 0.0, 0.0, 0.0]
       {
         'id' => facade.id,
+        'index' => facade.index,
         'x1' => line[0].round(2), 'y1' => line[1].round(2),
         'x2' => line[2].round(2), 'y2' => line[3].round(2),
+        'flip' => facade.flip ? true : false,
         'nx' => facade.normal.x.round(4), 'ny' => facade.normal.y.round(4),
         'name' => facade.name.to_s,
         'orient' => facade.orient.to_s,
@@ -341,7 +352,7 @@ module FacadeExport
       settings.set_export('last_directory', destination[:directory])
       settings.save
 
-      detector.renumber!(selected)
+      detector.assign_numbers!(selected)
       @facades = selected
       save_drawn(selected)
 
@@ -464,7 +475,7 @@ module FacadeExport
         next if facade.nil?
         facade.selected = true
         facade.orient = Config.auto_orient(item['orient'] || facade.orient)
-        facade.ratio = Config.auto_ratio_name(item['ratio'] || facade.ratio)
+        facade.ratio = Config.auto_ratio_name(item['ratio'] || facade.ratio, facade.orient)
         name = item['name'].to_s.strip
         facade.name = name.empty? ? facade.name : name
         result << facade
