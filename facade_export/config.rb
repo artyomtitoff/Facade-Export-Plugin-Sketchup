@@ -9,7 +9,7 @@ module FacadeExport
   module Config
     PREF_SECTION = 'FacadeExport'.freeze
     PREF_KEY     = 'settings'.freeze
-    SETTINGS_VERSION = 6
+    SETTINGS_VERSION = 7
 
     # Значения "RenderMode" (SketchUp, "Правка > Грань"):
     # 0 — Каркас, 1 — Скрытые линии, 2 — Затенение, 5 — Монохромный.
@@ -43,12 +43,15 @@ module FacadeExport
     # все PNG получаются одного размера. Фасад прижат к низу и к боковым
     # краям (минимальный зазор), а сверху остаётся запас — он и нужен, чтобы
     # при небольшом изменении высоты здания кадр не пришлось пересчитывать.
+    #
+    # Самый вытянутый вариант — 1:2. Более вытянутых (2:1, 3:1 и т. п.) в
+    # списке нет: кадр разворачивается по самой длинной стороне фасада, и
+    # «1:2» для широкого фасада и есть прежнее 2:1.
     ASPECTS = {
       '4:3'  => [4, 3],
       '3:2'  => [3, 2],
       '16:9' => [16, 9],
-      '2:1'  => [2, 1],
-      '3:1'  => [3, 1],
+      '1:2'  => [1, 2],
       '1:1'  => [1, 1]
     }.freeze
 
@@ -338,6 +341,10 @@ module FacadeExport
       e['margin']     = clamp_float(e['margin'], 0.0, 0.25, 0.02)
       # Значение «auto» из 1.5.3 больше не существует — такие настройки
       # автоматически возвращаются к 4:3.
+      e['aspect'] = Config::DEFAULT_ASPECT if e['aspect'].to_s == 'auto'
+      # Пропорции 2:1 и 3:1 из 1.5.5 убраны как «слишком вытянутые»:
+      # самой вытянутой осталась 1:2 (для широкого фасада это и есть 2:1).
+      e['aspect'] = '1:2' if %w[2:1 3:1].include?(e['aspect'].to_s)
       e['aspect']     = Config::DEFAULT_ASPECT unless Config::aspect_valid?(e['aspect'])
       e['projection'] = 'parallel' unless %w[parallel perspective].include?(e['projection'].to_s)
 

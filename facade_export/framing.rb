@@ -470,14 +470,21 @@ module FacadeExport
     end
 
     # Камера для одного фасада: прижата к низу кадра, по центру по горизонтали.
+    #
+    # image_height — высота КАДРА в пикселях (то, что попадёт в PNG после
+    # обрезки). canvas_height — высота снимка, который реально делает SketchUp;
+    # если окно просмотра не в пропорциях кадра, снимок выше кадра и потом
+    # обрезается по центру (см. render_canvas).
     def build_camera(bounds, direction, projection, scale, image_width, image_height,
-                     gap_px, parallel = true)
+                     gap_px, parallel = true, canvas_height = nil)
+      canvas_height ||= image_height
       right = projection[:right]
       center = bounds.center
       center_u = center.x * right.x + center.y * right.y + center.z * right.z
       shift = projection[:u_center] - center_u
 
-      frame_height = image_height.to_f / scale      # высота кадра в единицах модели
+      # Высота снимка в единицах модели: ровно canvas_height пикселей.
+      frame_height = canvas_height.to_f / scale
       target_z = projection[:v_min] + (image_height / 2.0 - gap_px) / scale
       target = Geom::Point3d.new(
         center.x + right.x * shift,
@@ -511,43 +518,59 @@ module FacadeExport
       rescue StandardError
         nil
       end
-      apply_aspect_ratio(camera, image_width, image_height, parallel)
+      camera
     end
 
-    # Пропорции кадра уходят в саму камеру.
+    # Размер снимка и размер кадра после обрезки.
     #
-    # SketchUp по умолчанию (camera.aspect_ratio = 0) строит горизонтальный
-    # охват по пропорциям ОКНА просмотра, а write_image растягивает картинку
-    # до заданных пикселей. Поэтому при жёстком кадре 4:3 в широком окне
-    # горизонтальный охват оказывался шире нужного: фасад занимал не всю
-    # ширину PNG, и слева-справа появлялись поля — сразу у всех четырёх
-    # фасадов, включая самый большой, по которому считается масштаб. Именно
-    # поэтому «отступы» не находились в геометрии: их давало окно SketchUp.
+    # SketchUp всегда снимает ВСЁ окно просмотра и растягивает снимок до
+    # запрошенных пикселей. Окно SketchUp почти всегда шире кадра (16:9,
+    # ultrawide 21:9 и т. п.), поэтому кадр занимает только часть картинки, а
+    # по краям остаются пустые полосы. Раньше это и выглядело как «огромные
+    # отступы у всех фасадов» — в модели их не было, их давало окно.
     #
-    # Теперь пропорции камеры равны пропорциям PNG, кадр одинаков на любом
-    # компьютере и при любом размере окна, а геометрия не растягивается.
-    def apply_aspect_ratio(camera, image_width, image_height, parallel = true)
+    # Теперь снимок делается в пропорциях окна (без растяжения), а потом из
+    # него вырезается центральная область кадра. Результат одинаковый на
+    # любом мониторе.
+    #
+    # Возвращает [ширина снимка, высота снимка, ширина кадра, высота кадра].
+    def render_canvas(image_width, image_height, viewport_ratio)
       width = image_width.to_i
       height = image_height.to_i
-      return camera if width <= 0 || height <= 0
-      ratio = width.to_f / height.to_f
-      return camera unless ratio.finite? && ratio > 0.0
-      begin
-        camera.aspect_ratio = ratio
-      rescue StandardError
-        return camera
+      return [width, height, width, height] if width <= 0 || height <= 0
+      target = width.to_f / height.to_f
+      ratio = viewport_ratio.to_f
+      if !ratio.finite? || ratio <= 0.0 || (ratio - target).abs <= target * 0.01
+        return [width, height, width, height]
       end
-      # После установки пропорций угол обзора перспективной камеры начинает
-      # считаться по горизонтали. Возвращаем его к прежнему вертикальному
-      # значению, иначе фасад обрежется сверху и снизу.
-      begin
-        if !parallel && camera.respond_to?(:fov_is_height?) && !camera.fov_is_height?
-          camera.fov = 2.0 * Math.atan(Math.tan(FOV * Math::PI / 360.0) * ratio) * 180.0 / Math::PI
-        end
-      rescue StandardError
-        nil
+
+      if ratio > target
+        canvas_h = height.to_f
+        canvas_w = canvas_h * ratio
+      else
+        canvas_w = width.to_f
+        canvas_h = canvas_w / ratio
       end
-      camera
+
+      # Ограничение SketchUp — 16000 px на сторону.
+      scale = 1.0
+      scale = [scale, Config::MAX_IMAGE_SIDE / canvas_w].min if canvas_w > Config::MAX_IMAGE_SIDE
+      scale = [scale, Config::MAX_IMAGE_SIDE / canvas_h].min if canvas_h > Config::MAX_IMAGE_SIDE
+      canvas_w = (canvas_w * scale).round
+      canvas_h = (canvas_h * scale).round
+      canvas_w = 1 if canvas_w < 1
+      canvas_h = 1 if canvas_h < 1
+
+      crop_h = [height, canvas_h].min
+      crop_w = (crop_h * target).round
+      if crop_w > canvas_w
+        crop_w = [width, canvas_w].min
+        crop_h = (crop_w / target).round
+        crop_h = canvas_h if crop_h > canvas_h
+      end
+      crop_w = 1 if crop_w < 1
+      crop_h = 1 if crop_h < 1
+      [canvas_w, canvas_h, crop_w, crop_h]
     end
 
     # Расстояние для перспективной камеры.
@@ -683,12 +706,34 @@ module FacadeExport
       ratio >= 1.0 ? [longest, side] : [side, longest]
     end
 
+    # Пропорции окна просмотра: по ним SketchUp строит снимок.
+    # nil — если размер окна недоступен (тогда снимок делается как раньше).
+    def viewport_ratio(view)
+      width = view.vpwidth.to_f
+      height = view.vpheight.to_f
+      return nil if width <= 0.0 || height <= 0.0
+      width / height
+    rescue StandardError
+      nil
+    end
+
+    # Точка взгляда камеры (Camera#eye в тестовой заглушке тоже есть).
+    def eye_of(camera)
+      camera.eye
+    rescue StandardError
+      camera.target
+    end
+
     # Камеры для всех фасадов в режиме «что на экране».
     # Первая — ровно текущий вид, каждая следующая повёрнута на 90°.
     def visible_cameras(camera, view, export_settings, count = 4, parallel = true)
       width, height = visible_image_size(export_settings)
       ratio = height.to_f.zero? ? 1.0 : width.to_f / height.to_f
       frame_height = visible_frame_height(camera)
+      canvas_w, canvas_h, crop_w, crop_h = render_canvas(width, height, viewport_ratio(view))
+      # Снимок может быть выше кадра — тогда камера накрывает не height, а
+      # canvas_h пикселей, и лишнее отрезается по центру.
+      cam_height = frame_height * canvas_h.to_f / [crop_h, 1].max
       camera = parallel_camera(camera) if parallel && perspective?(camera)
 
       target = Geom::Point3d.new(camera.target.x, camera.target.y, camera.target.z)
@@ -711,23 +756,30 @@ module FacadeExport
         end
         begin
           if parallel
-            cam.height = frame_height
+            cam.height = cam_height
           else
-            cam.fov = camera.fov
+            # Перспектива: тот же угол, но по вертикали должно быть видно
+            # cam_height единиц (снимок может быть выше кадра).
+            distance = (eye_of(cam) - cam.target).length
+            cam.fov = if distance > MIN_SIZE
+                        2.0 * Math.atan((cam_height / 2.0) / distance) * 180.0 / Math::PI
+                      else
+                        camera.fov
+                      end
           end
         rescue StandardError
           nil
         end
-        # Пропорции PNG — в камеру: иначе кадр зависел бы от размера окна.
-        apply_aspect_ratio(cam, width, height, parallel)
         cameras << cam
         # поворот вектора «цель -> камера» на 90° вокруг вертикальной оси
         dx, dy = dy, -dx
       end
 
       [{
-        :image_width => width,
-        :image_height => height,
+        :image_width => crop_w,
+        :image_height => crop_h,
+        :canvas_width => canvas_w,
+        :canvas_height => canvas_h,
         :frame_height => frame_height,
         :ratio => ratio,
         :visible => true,

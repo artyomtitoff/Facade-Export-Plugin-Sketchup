@@ -148,6 +148,8 @@ module FacadeExport
         @result.scope = scope
         @result.image_width = plan[:image_width]
         @result.image_height = plan[:image_height]
+        @canvas_width = plan[:canvas_width]
+        @canvas_height = plan[:canvas_height]
         log_frame(plan, cameras, parallel, visible)
 
         jobs = Exporter.output_jobs(@settings)
@@ -222,6 +224,23 @@ module FacadeExport
       if span && span.length == 3
         FacadeExport.log(format('Габариты содержимого: %.1f × %.1f × %.1f ед.', *span))
       end
+      canvas_w, canvas_h = canvas_size
+      if canvas_w != plan[:image_width] || canvas_h != plan[:image_height]
+        vw = begin
+          @view.vpwidth.to_i
+        rescue StandardError
+          0
+        end
+        vh = begin
+          @view.vpheight.to_i
+        rescue StandardError
+          0
+        end
+        FacadeExport.log(
+          "Окно SketchUp #{vw}×#{vh}: снимок #{canvas_w}×#{canvas_h}, " \
+          "кадр вырезается по центру → #{plan[:image_width]}×#{plan[:image_height]} px"
+        )
+      end
       return if visible || scale <= 0.0
       projections = plan[:projections]
       return if projections.nil? || projections.empty?
@@ -246,8 +265,11 @@ module FacadeExport
       return unless defined?(Sketchup::ImageRep)
       camera = cameras && cameras.first
       return if camera.nil?
+      # Пробный снимок делается в пропорциях окна — как настоящий, поэтому
+      # его поля можно пересчитать в пиксели кадра.
+      canvas_w, canvas_h = canvas_size
       width = 500
-      height = [(width * plan[:image_height].to_f / [plan[:image_width].to_f, 1.0].max).round, 1].max
+      height = [(width * canvas_h.to_f / [canvas_w.to_f, 1.0].max).round, 1].max
       path = probe_path
       return if path.nil?
       @view.camera = camera
@@ -260,12 +282,20 @@ module FacadeExport
       box = probe_content_box(path)
       return if box.nil?
       left, right, top, bottom_px = box
+      # Пересчёт «пробный снимок -> кадр»: снимок обрезается по центру,
+      # поэтому поле в кадре = поле в снимке минус отступ обрезки.
+      k = canvas_w.to_f / width
+      crop_x = [(canvas_w - plan[:image_width]) / 2, 0].max
+      crop_y = [(canvas_h - plan[:image_height]) / 2, 0].max
+      frame_left = (left * k - crop_x).round
+      frame_right = (right * k - crop_x).round
+      frame_bottom = (bottom_px * k - crop_y).round
       FacadeExport.log(
-        "Самопроверка (пробный снимок #{width}×#{height}): содержимое " \
+        "Самопроверка (пробный снимок #{width}×#{height}, как окно): содержимое " \
         "#{width - left - right}×#{height - top - bottom_px} px, поля: " \
-        "слева #{left}, справа #{right}, снизу #{bottom_px}, сверху #{top} " \
-        "(в масштабе кадра: слева/справа #{[(left * plan[:image_width].to_f / width).round, 0].max}, " \
-        "снизу #{[(bottom_px * plan[:image_height].to_f / height).round, 0].max})"
+        "слева #{left}, справа #{right}, снизу #{bottom_px}, сверху #{top}; " \
+        "в пикселях кадра: слева #{frame_left}, справа #{frame_right}, " \
+        "снизу #{frame_bottom}"
       )
     rescue StandardError => e
       FacadeExport.log("Самопроверка кадра не удалась: #{e.message}")
@@ -387,11 +417,24 @@ module FacadeExport
       # Габариты считаются один раз за экспорт: обход геометрии — самая
       # дорогая часть, повторять её на каждый фасад нельзя.
       bounds, scope = export_bounds
-      plan = Framing.plan(bounds, directions, @settings.export)
+      # Снимок делается в пропорциях окна просмотра, а из него вырезается
+      # центральная область кадра: иначе широкое окно SketchUp добавляло бы
+      # пустые полосы по краям у всех фасадов.
+      preview = Framing.plan(bounds, directions, @settings.export)
+      canvas_w, canvas_h, crop_w, crop_h = Framing.render_canvas(
+        preview[:image_width], preview[:image_height], Framing.viewport_ratio(@view)
+      )
+      # Кадр считаем сразу под фактический размер обрезки: если снимок пришлось
+      # ужать под лимит SketchUp (16000 px), вместе с ним уменьшается и кадр,
+      # но композиция остаётся прежней.
+      frame_settings = @settings.export.merge('width' => crop_w, 'height' => crop_h)
+      plan = Framing.plan(bounds, directions, frame_settings)
+      plan[:canvas_width] = canvas_w
+      plan[:canvas_height] = canvas_h
       cameras = directions.each_with_index.map do |direction, index|
         Framing.build_camera(
           bounds, direction, plan[:projections][index], plan[:scale],
-          plan[:image_width], plan[:image_height], plan[:gap], parallel
+          plan[:image_width], plan[:image_height], plan[:gap], parallel, canvas_h
         )
       end
       [directions.first(@facade_count), cameras.first(@facade_count), plan, scope]
@@ -705,7 +748,7 @@ module FacadeExport
         remove_existing(temp)
         ok = do_write(options.merge(:filename => temp))
         if ok && File.exist?(temp) && file_size(temp).positive?
-          return publish(temp, path)
+          return publish_image(temp, path)
         end
         FacadeExport.log("Временный файл не создан, пишу напрямую: #{File.basename(path)}")
       end
@@ -720,15 +763,78 @@ module FacadeExport
       ok && File.exist?(path)
     end
 
+    # Размер снимка (холста) и размер кадра после обрезки.
+    def canvas_size
+      canvas_w = (@canvas_width || @result.image_width).to_i
+      canvas_h = (@canvas_height || @result.image_height).to_i
+      [canvas_w, canvas_h]
+    end
+
     def image_options
+      canvas_w, canvas_h = canvas_size
       options = {
-        :width       => @result.image_width,
-        :height      => @result.image_height,
+        :width       => canvas_w,
+        :height      => canvas_h,
         :antialias   => @settings.exp('antialias') ? true : false,
         :transparent => @settings.exp('transparent') ? true : false
       }
       options[:scale_factor] = @settings.exp('line_scale').to_f
       options
+    end
+
+    # Готовый снимок кладём на место. Если окно просмотра не в пропорциях
+    # кадра, из снимка вырезается центральная область кадра: SketchUp всегда
+    # снимает всё окно, и без обрезки по краям оставались бы пустые полосы.
+    def publish_image(temp, path)
+      canvas_w, canvas_h = canvas_size
+      crop_w = @result.image_width.to_i
+      crop_h = @result.image_height.to_i
+      if defined?(Sketchup::ImageRep) && (crop_w != canvas_w || crop_h != canvas_h)
+        if crop_image(temp, path, crop_w, crop_h)
+          cleanup_temp(temp)
+          return true
+        end
+        FacadeExport.log("Обрезка кадра не удалась, сохраняю снимок целиком: #{File.basename(path)}")
+      end
+      publish(temp, path)
+    end
+
+    # Вырезает из PNG центральную область crop_w × crop_h и сохраняет её.
+    def crop_image(source, target, crop_w, crop_h)
+      rep = Sketchup::ImageRep.new(source)
+      src_w = rep.width.to_i
+      src_h = rep.height.to_i
+      bits = rep.bits_per_pixel.to_i
+      bytes = bits / 8
+      return false if bytes < 1 || src_w <= 0 || src_h <= 0
+      crop_w = src_w if crop_w > src_w
+      crop_h = src_h if crop_h > src_h
+      return false if crop_w <= 0 || crop_h <= 0
+      return false if crop_w == src_w && crop_h == src_h
+      stride = src_w * bytes + rep.row_padding.to_i
+      data = rep.data.to_s
+      return false if data.empty? || data.bytesize < stride
+      offset_x = [(src_w - crop_w) / 2, 0].max * bytes
+      offset_y = [(src_h - crop_h) / 2, 0].max
+      row_bytes = crop_w * bytes
+      buffer = begin
+        String.new(:capacity => row_bytes * crop_h)
+      rescue StandardError
+        String.new
+      end
+      crop_h.times do |row|
+        piece = data.byteslice((offset_y + row) * stride + offset_x, row_bytes)
+        return false if piece.nil? || piece.bytesize < row_bytes
+        buffer << piece
+      end
+      cropped = Sketchup::ImageRep.new
+      cropped.set_data(crop_w, crop_h, bits, 0, buffer)
+      remove_existing(target)
+      cropped.save_file(target)
+      File.exist?(target) && file_size(target).positive?
+    rescue StandardError => e
+      FacadeExport.log("Обрезка кадра: #{e.message}")
+      false
     end
 
     # Копируем готовый PNG на место. Копию создаём сами и сразу закрываем

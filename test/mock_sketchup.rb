@@ -662,7 +662,7 @@ module Sketchup
         Geom::Point3d.new(0, -3000, 300), Geom::Point3d.new(0, 0, 300), Geom::Vector3d.new(0, 0, 1)
       )
       @vpwidth = 1600.0
-      @vpheight = 900.0
+      @vpheight = 1200.0
       @writes = []
     end
 
@@ -707,9 +707,68 @@ module Sketchup
     def build_payload(options)
       # Небольшой валидный PNG + текстовая сигнатура для тестов.
       signature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A].pack('C*')
-      body = "FAKE-PNG #{options.inspect}"
+      width = options.is_a?(Hash) ? options[:width] : options[1]
+      height = options.is_a?(Hash) ? options[:height] : options[2]
+      body = "MOCK-IMAGE #{width.to_i}x#{height.to_i} FAKE-PNG #{options.inspect}"
       body = body.encode('UTF-8').b if body.respond_to?(:b)
       signature + body
+    end
+  end
+
+  # Простейшая замена Sketchup::ImageRep: помнит размеры и умеет отдавать
+  # пиксели, в которых закодированы координаты (столбец, строка) — по ним
+  # тесты проверяют, что из снимка вырезана именно центральная область.
+  class ImageRep
+    attr_reader :width, :height, :bits_per_pixel, :row_padding
+
+    def initialize(source = nil)
+      @width = 0
+      @height = 0
+      @bits_per_pixel = 32
+      @row_padding = 0
+      @data = ''.b
+      load_file(source) if source
+    end
+
+    def load_file(path)
+      header = File.binread(path, 200).to_s
+      if (match = header.match(/MOCK-IMAGE (\d+)x(\d+)/))
+        @width = match[1].to_i
+        @height = match[2].to_i
+        # Для больших снимков хватает одного байта на пиксель.
+        @bits_per_pixel = @width * @height > 2_000_000 ? 8 : 32
+      end
+      true
+    end
+
+    def data
+      bytes = bits_per_pixel / 8
+      return @data if @data.bytesize == @width * @height * bytes
+      buffer = String.new(:capacity => @width * @height * bytes)
+      @height.times do |row|
+        @width.times do |col|
+          buffer << if bytes >= 4
+                      [col % 256, row % 256, 7, 255].pack('C*')
+                    else
+                      [col % 256].pack('C*')
+                    end
+        end
+      end
+      @data = buffer
+    end
+
+    def set_data(width, height, bits_per_pixel, row_padding, pixel_data)
+      @width = width.to_i
+      @height = height.to_i
+      @bits_per_pixel = bits_per_pixel.to_i
+      @row_padding = row_padding.to_i
+      @data = pixel_data.to_s.b
+      self
+    end
+
+    def save_file(path)
+      File.binwrite(path, "MOCK-IMAGE #{@width}x#{@height} FAKE-PNG CROPPED\n" + @data)
+      true
     end
   end
 
