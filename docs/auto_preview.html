@@ -49,7 +49,10 @@
   .plan-pane .canvas svg {
     width: 100%; height: 100%; display: block;
     touch-action: none; cursor: crosshair;
+    -webkit-user-select: none; user-select: none;
   }
+  .plan-pane .canvas.draggable svg { cursor: grab; }
+  .plan-pane .canvas.grabbing svg { cursor: grabbing; }
   .plan-pane .caption { font-size: 11px; color: var(--muted); text-align: center; }
 
   /* Справа — компактный список нарисованных фасадов. */
@@ -61,7 +64,7 @@
   }
   .list-pane .head, .facade {
     display: grid;
-    grid-template-columns: 28px minmax(64px, 1fr) 108px 84px 74px 20px 20px;
+    grid-template-columns: 26px minmax(62px, 1fr) 104px 78px 74px 20px 20px;
     gap: 6px; align-items: center;
   }
   .list-pane .head {
@@ -2150,11 +2153,24 @@
   },
   "span": 1000,
   "magnets": [
-    0,
-    45,
-    90,
-    135
+    [
+      1,
+      0
+    ],
+    [
+      0.7071,
+      0.7071
+    ],
+    [
+      0,
+      1
+    ],
+    [
+      -0.7071,
+      0.7071
+    ]
   ],
+  "magnetTol": 14,
   "orients": [
     [
       "h",
@@ -2169,59 +2185,60 @@
       "квадрат"
     ]
   ],
-  "ratios": [
-    [
-      "4:3",
-      "4:3"
+  "ratios": {
+    "h": [
+      [
+        "4:3",
+        "4:3"
+      ],
+      [
+        "3:2",
+        "3:2"
+      ],
+      [
+        "16:9",
+        "16:9"
+      ],
+      [
+        "2:1",
+        "2:1"
+      ],
+      [
+        "3:1",
+        "3:1"
+      ]
     ],
-    [
-      "3:2",
-      "3:2"
+    "v": [
+      [
+        "3:4",
+        "3:4"
+      ],
+      [
+        "2:3",
+        "2:3"
+      ],
+      [
+        "9:16",
+        "9:16"
+      ],
+      [
+        "1:2",
+        "1:2"
+      ],
+      [
+        "1:3",
+        "1:3"
+      ]
     ],
-    [
-      "16:9",
-      "16:9"
-    ],
-    [
-      "2:1",
-      "2:1"
-    ],
-    [
-      "3:1",
-      "3:1"
-    ],
-    [
-      "1:1",
-      "1:1"
-    ],
-    [
-      "3:4",
-      "3:4"
-    ],
-    [
-      "2:3",
-      "2:3"
-    ],
-    [
-      "9:16",
-      "9:16"
-    ],
-    [
-      "1:2",
-      "1:2"
-    ],
-    [
-      "1:3",
-      "1:3"
-    ],
-    [
-      "авто",
-      "авто — по фасаду"
+    "sq": [
+      [
+        "1:1",
+        "1:1"
+      ]
     ]
-  ],
+  },
   "defaultOrient": "h",
-  "defaultRatio": "3:4",
-  "maxFacades": 30,
+  "defaultRatio": "4:3",
   "scenePrefix": "Фасад",
   "longestSide": 9999,
   "deleteScenes": true,
@@ -2235,7 +2252,8 @@
       "pageName": "Фасад 1 — запад",
       "id": 1,
       "orient": "h",
-      "ratio": "3:4",
+      "ratio": "4:3",
+      "flip": false,
       "selected": true,
       "segment": {
         "from": [
@@ -2260,7 +2278,8 @@
       "pageName": "Фасад 2 — северо-запад",
       "id": 2,
       "orient": "h",
-      "ratio": "3:4",
+      "ratio": "4:3",
+      "flip": false,
       "selected": true,
       "segment": {
         "from": [
@@ -2285,7 +2304,8 @@
       "pageName": "Фасад 3 — север",
       "id": 3,
       "orient": "h",
-      "ratio": "3:4",
+      "ratio": "4:3",
+      "flip": false,
       "selected": true,
       "segment": {
         "from": [
@@ -2310,7 +2330,8 @@
       "pageName": "Фасад 4 — восток",
       "id": 4,
       "orient": "h",
-      "ratio": "3:4",
+      "ratio": "4:3",
+      "flip": false,
       "selected": true,
       "segment": {
         "from": [
@@ -2335,7 +2356,8 @@
       "pageName": "Фасад 5 — юг",
       "id": 5,
       "orient": "h",
-      "ratio": "3:4",
+      "ratio": "4:3",
+      "flip": false,
       "selected": true,
       "segment": {
         "from": [
@@ -2360,7 +2382,8 @@
       "pageName": "Фасад 6 — двор",
       "id": 6,
       "orient": "h",
-      "ratio": "3:4",
+      "ratio": "4:3",
+      "flip": false,
       "selected": true,
       "segment": {
         "from": [
@@ -2385,7 +2408,8 @@
       "pageName": "Фасад 7 — двор",
       "id": 7,
       "orient": "h",
-      "ratio": "3:4",
+      "ratio": "4:3",
+      "flip": false,
       "selected": true,
       "segment": {
         "from": [
@@ -2410,7 +2434,8 @@
       "pageName": "Фасад 8 — двор",
       "id": 8,
       "orient": "h",
-      "ratio": "3:4",
+      "ratio": "4:3",
+      "flip": false,
       "selected": true,
       "segment": {
         "from": [
@@ -2481,7 +2506,17 @@
   function cells() { return (data && data.plan && data.plan.cells) || []; }
   function polygons() { return (data && data.plan && data.plan.polygons) || []; }
   function longest() { return Number((data && data.longestSide) || 9999); }
-  function maxFacades() { return Number((data && data.maxFacades) || 30); }
+  // Пропорции — свои для каждой ориентации: горизонтальному кадру только
+  // широкие пары, вертикальному — только высокие, квадрату — одна 1:1.
+  function ratiosFor(orient) {
+    var all = (data && data.ratios) || {};
+    var list = all[orient] || all.h || [];
+    return list.length ? list : [['4:3', '4:3']];
+  }
+  function defaultRatio(orient) {
+    var list = ratiosFor(orient);
+    return list.length ? list[0][0] : '4:3';
+  }
 
   // Точка внутри многоугольника (алгоритм луча).
   function inPolygon(x, y, points) {
@@ -2498,20 +2533,32 @@
     return inside;
   }
 
-  // Размер PNG: сначала ориентация (горизонт/вертикаль/квадрат), потом
-  // пропорции. Длинная сторона — из настроек экспорта.
-  function pixels(orient, ratio, side) {
-    var longestSide = side || longest();
-    if (!ratio || ratio === 'авто') {
-      return orient === 'sq' ? [longestSide, longestSide] : null;
-    }
-    var parts = String(ratio).split(':');
-    var a = Number(parts[0]) || 1;
-    var b = Number(parts[1]) || 1;
-    var long = Math.max(a, b);
-    var short = Math.min(a, b);
-    var edge = Math.max(100, Math.round(longestSide * short / long));
+  // Пара пропорций, приведённая к ориентации: горизонтальному кадру только
+  // широкие пары, вертикальному — только высокие, квадрату — 1:1.
+  function fittedRatio(orient, ratio) {
+    var keys = ratiosFor(orient).map(function (pair) { return pair[0]; });
+    if (orient === 'sq') return keys[0] || '1:1';
+    if (keys.indexOf(ratio) >= 0) return ratio;
+    var parts = String(ratio || '').split(':');
+    var a = Number(parts[0]) || 0;
+    var b = Number(parts[1]) || 0;
+    if (!a || !b) return keys[0] || (orient === 'v' ? '3:4' : '4:3');
+    var wantsVertical = orient === 'v';
+    var isVertical = a < b;
+    var swapped = isVertical === wantsVertical ? ratio : b + ':' + a;
+    return keys.indexOf(swapped) >= 0 ? swapped : (keys[0] || swapped);
+  }
+
+  // Размер PNG: длинная сторона — из настроек экспорта, вторая — по паре
+  // пропорций своей ориентации (16:9 у горизонтального, 9:16 у вертикального).
+  function pixels(orient, ratio) {
+    var longestSide = longest();
     if (orient === 'sq') return [longestSide, longestSide];
+    var parts = fittedRatio(orient, ratio).split(':');
+    var a = Number(parts[0]) || 4;
+    var b = Number(parts[1]) || 3;
+    var wide = a >= b;
+    var edge = Math.max(100, Math.round(wide ? longestSide * b / a : longestSide * a / b));
     if (orient === 'v') return [edge, longestSide];
     return [longestSide, edge];
   }
@@ -2548,69 +2595,67 @@
     return false;
   }
 
-  // Стрелка стоит по ДРУГУЮ сторону линии и смотрит НА линию: носок
-  // треугольника почти касается линии, основание — дальше от неё.
-  // Сторона, куда смотрит стрелка, — та, с которой снимается фасад.
+  // Стрелка стоит со стороны камеры (туда же смотрит нормаль фасада) и
+  // смотрит НА линию: носок треугольника почти касается линии, основание —
+  // дальше от неё. Камера этого фасада смотрит туда же, куда стрелка.
   function arrowMark(seg, color) {
     var cx = (seg.from[0] + seg.to[0]) / 2;
     var cy = (seg.from[1] + seg.to[1]) / 2;
-    var nx = -seg.normal[0];      // от линии в сторону стрелки
-    var ny = -seg.normal[1];
-    var gap = 7;                  // носок почти касается линии
-    var head = 26;                // высота треугольника
-    var half = 13;                // половина основания
-    var shaft = 22;               // хвост, чтобы стрелка читалась как стрелка
+    var nx = seg.normal[0];       // от линии в сторону камеры
+    var ny = seg.normal[1];
+    var gap = 8;                  // носок почти касается линии
+    var head = 30;                // высота треугольника
+    var half = 15;                // половина основания
     var tx = -ny;
     var ty = nx;
     var tipX = cx + nx * gap;
     var tipY = cy + ny * gap;
     var baseX = tipX + nx * head;
     var baseY = tipY + ny * head;
-    var tailX = tipX + nx * (head + shaft);
-    var tailY = tipY + ny * (head + shaft);
-    return '<line class="arrow-shaft" x1="' + round(tailX) + '" y1="' + round(tailY) +
-      '" x2="' + round(baseX) + '" y2="' + round(baseY) +
-      '" stroke="' + color + '" stroke-width="6" stroke-linecap="round"/>' +
-      '<path class="arrow" d="M ' + round(tipX) + ' ' + round(tipY) +
+    return '<path class="arrow" d="M ' + round(tipX) + ' ' + round(tipY) +
       ' L ' + round(baseX + tx * half) + ' ' + round(baseY + ty * half) +
       ' L ' + round(baseX - tx * half) + ' ' + round(baseY - ty * half) + ' Z" fill="' +
       color + '"/>';
   }
 
-  // Номера расставляются снаружи контура, не наезжая друг на друга и не
-  // попадая на само здание: иначе не понять, какой номер к какой линии.
+  // Номера стоят вплотную к своей линии — с той стороны, где нет стрелки
+  // (то есть со стороны здания, а не камеры).
+  // Соседние номера не наезжают друг на друга: при нехватке места номер
+  // сдвигается вдоль линии, потом чуть дальше от неё.
+  var BADGE_R = 23;
   function placeBadges(items) {
     var placed = [];
-    var rings = [150, 200, 250, 300, 350];
-    var shifts = [0, 60, -60, 120, -120, 180, -180];
-    var MIN = -70, MAX = 1070;
+    var offsets = [42, 42, 42, 58, 76, 96];
+    var shifts = [0, -0.28, 0.28, -0.42, 0.42];
+    var MIN = -40, MAX = 1040;
     function clamp(v) { return v < MIN ? MIN : (v > MAX ? MAX : v); }
     function clash(px, py) {
       return placed.some(function (p) {
-        return Math.sqrt((p[0] - px) * (p[0] - px) + (p[1] - py) * (p[1] - py)) < 52;
+        return Math.sqrt((p[0] - px) * (p[0] - px) + (p[1] - py) * (p[1] - py)) < BADGE_R * 2 + 16;
       });
     }
     return items.map(function (item) {
       var seg = item.segment;
-      var cx = (seg.from[0] + seg.to[0]) / 2;
-      var cy = (seg.from[1] + seg.to[1]) / 2;
-      var nx = seg.normal[0];
-      var ny = seg.normal[1];
-      var tx = -ny;
-      var ty = nx;
-      var free = null;
-      var anywhere = null;
-      for (var r = 0; r < rings.length && free === null; r++) {
-        for (var s = 0; s < shifts.length; s++) {
-          var px = clamp(cx + nx * rings[r] + tx * shifts[s]);
-          var py = clamp(cy + ny * rings[r] + ty * shifts[s]);
-          if (anywhere === null) anywhere = [px, py];
-          if (insideBuilding(px, py) || clash(px, py)) continue;
-          free = [px, py];
-          break;
+      // Стрелка — со стороны камеры, значит номер — с противоположной.
+      var nx = -seg.normal[0];
+      var ny = -seg.normal[1];
+      var tx = seg.to[0] - seg.from[0];
+      var ty = seg.to[1] - seg.from[1];
+      var fallback = null;
+      for (var i = 0; i < offsets.length; i++) {
+        for (var j = 0; j < shifts.length; j++) {
+          // Точка на линии (0.5 — середина, ± — вдоль линии), сдвинутая
+          // в сторону, противоположную стрелке.
+          var t = 0.5 + shifts[j];
+          var px = clamp(seg.from[0] + tx * t + nx * offsets[i]);
+          var py = clamp(seg.from[1] + ty * t + ny * offsets[i]);
+          if (fallback === null) fallback = [px, py];
+          if (clash(px, py)) continue;
+          placed.push([px, py]);
+          return [px, py];
         }
       }
-      var spot = free || anywhere || [clamp(cx + nx * 150), clamp(cy + ny * 150)];
+      var spot = fallback || [clamp(seg.from[0]), clamp(seg.from[1])];
       placed.push(spot);
       return spot;
     });
@@ -2651,7 +2696,7 @@
     items.forEach(function (item, i) {
       var seg = segmentOf(item);
       var color = item.selected ? '#e03131' : '#b9c1cc';
-      var width = item.selected ? 14 : 10;
+      var width = item.selected ? 10 : 7;
 
       // Сама линия фасада — тонкая и ровно там, где её провели.
       svg.push('<line class="wall" x1="' + round(seg.from[0]) + '" y1="' + round(seg.from[1]) +
@@ -2662,11 +2707,12 @@
       // Номер — снаружи, чтобы не заслонять схему.
       var b = badges[i];
       svg.push('<g class="badge-g" data-index="' + item.position + '">');
-      svg.push('<circle cx="' + round(b[0]) + '" cy="' + round(b[1]) + '" r="19" fill="' +
-        (item.selected ? color : '#ffffff') + '" stroke="' + color + '" stroke-width="4"/>');
+      svg.push('<circle cx="' + round(b[0]) + '" cy="' + round(b[1]) + '" r="' + BADGE_R +
+        '" fill="' + (item.selected ? color : '#ffffff') + '" stroke="' + color +
+        '" stroke-width="3"/>');
       svg.push('<text x="' + round(b[0]) + '" y="' + round(b[1]) + '" text-anchor="middle" ' +
         'dominant-baseline="central" font-family="Segoe UI, Arial, sans-serif" ' +
-        'font-size="20" font-weight="600" fill="' +
+        'font-size="24" font-weight="700" fill="' +
         (item.selected ? '#ffffff' : '#9aa3b0') + '">' + esc(item.index) + '</text>');
       svg.push('</g>');
 
@@ -2682,11 +2728,60 @@
     return svg.join('');
   }
 
+  // Магнитные направления основных плоскостей — те же, что считает Ruby.
+  function magnetAngles() {
+    var list = (data && data.magnets) || [];
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var v = list[i];
+      if (!v) continue;
+      var x = Number(v[0]);
+      var y = Number(v[1]);
+      if (!isFinite(x) || !isFinite(y) || (!x && !y)) continue;
+      var a = Math.atan2(y, x) * 180 / Math.PI;
+      out.push(a < 0 ? a + 180 : a);     // прямая, направление не важно
+    }
+    return out;
+  }
+
+  // Линия прилипает к главным плоскостям прямо во время протяжки: тот же
+  // допуск и тот же поворот вокруг середины, что и в Ruby при отпускании.
+  // Так пользователь видит, что магнит сработал, ещё не отпустив кнопку.
+  function magnetizeLine(line) {
+    var dx = line[2] - line[0];
+    var dy = line[3] - line[1];
+    var length = Math.sqrt(dx * dx + dy * dy);
+    if (length < 1e-6) return { line: line, snapped: false };
+    var angle = Math.atan2(dy, dx) * 180 / Math.PI;
+    if (angle < 0) angle += 180;
+    var best = null;
+    var candidates = magnetAngles();
+    for (var i = 0; i < candidates.length; i++) {
+      var diff = Math.abs(angle - candidates[i]);
+      if (diff > 90) diff = 180 - diff;
+      if (best === null || diff < best[1]) best = [candidates[i], diff];
+    }
+    // Допуск магнита — как SNAP_TOL в Ruby.
+    var tolerance = Number((data && data.magnetTol) || 14);
+    if (!best || best[1] > tolerance) return { line: line, snapped: false };
+    var rad = best[0] * Math.PI / 180;
+    var ux = Math.cos(rad);
+    var uy = Math.sin(rad);
+    var mx = (line[0] + line[2]) / 2;
+    var my = (line[1] + line[3]) / 2;
+    return {
+      line: [mx - ux * length / 2, my - uy * length / 2,
+             mx + ux * length / 2, my + uy * length / 2],
+      snapped: true
+    };
+  }
+
   // Нарисованная линия: снаружи — красная, внутри здания — синяя (сечение).
   function dragMarks() { return dragMarksFor(drag); }
 
   function dragMarksFor(line) {
     if (!line) return '';
+    line = magnetizeLine(line).line;
     var steps = 160;
     var parts = [];
     var current = null;
@@ -2738,8 +2833,14 @@
         esc(item.name) + '"></div>';
       html += '<div><select data-role="orient">' + options(data && data.orients,
         item.orient) + '</select></div>';
-      html += '<div><select data-role="ratio">' + options(data && data.ratios,
-        item.ratio) + '</select></div>';
+      var orient = item.orient || (data && data.defaultOrient) || 'h';
+      var pairs = ratiosFor(orient);
+      var locked = pairs.length <= 1;   // «квадрат» — только 1:1
+      html += '<div><select data-role="ratio"' + (locked ? ' disabled' : '') +
+        ' title="' + (locked ? 'У квадратного кадра пропорция всегда 1:1' :
+        'Пропорции для выбранной ориентации') + '">' +
+        options(pairs, locked ? pairs[0][0] : fittedRatio(orient, item.ratio)) +
+        '</select></div>';
       html += '<div class="px" data-role="px">' + sizeText(item) + '</div>';
       html += '<div><button type="button" class="flip" data-role="flip"' +
         ' title="Развернуть фасад в другую сторону">⇄</button></div>';
@@ -2804,7 +2905,7 @@
   function updateFootnote() {
     var items = visibleItems();
     var chosen = items.filter(function (s) { return s.selected; }).length;
-    var parts = ['Нарисовано: ' + items.length + ' из ' + maxFacades() + '.'];
+    var parts = ['Нарисовано: ' + items.length + '.'];
     parts.push('Выбрано: ' + chosen + '.');
     parts.push(data && data.deleteScenes ? 'Сцены временные.' : 'Сцены останутся в модели.');
     document.getElementById('footnote').textContent = parts.join(' ');
@@ -2852,6 +2953,19 @@
 
   var startPoint = null;
   var moved = false;
+  var lastPoint = null;      // последняя точка протяжки — на случай отпускания вне схемы
+  var hoverCursor = '';
+
+  // Курсор «перетащить», когда под мышью линия: видно, что её можно тянуть.
+  function setHover(hit) {
+    var canvas = document.getElementById('canvas');
+    if (!canvas) return;
+    var want = hit ? 'draggable' : '';
+    if (want === hoverCursor) return;
+    hoverCursor = want;
+    canvas.classList.toggle('draggable', !!hit);
+    canvas.classList.remove('grabbing');
+  }
 
   function beginDraw(event) {
     var point = svgPoint(event);
@@ -2861,6 +2975,9 @@
       // Тянем существующую линию: только перенос, поворачивать нельзя.
       moving = { item: hit, start: point, segment: copySegment(hit.segment), wasMoved: false };
       moved = false;
+      lastPoint = point;
+      var canvas = document.getElementById('canvas');
+      if (canvas) { canvas.classList.add('grabbing'); canvas.classList.remove('draggable'); }
       return;
     }
     startPoint = point;
@@ -2888,6 +3005,8 @@
   function moveDraw(event) {
     var point = svgPoint(event);
     if (!point) return;
+    lastPoint = point;
+    if (!moving && !startPoint) { setHover(lineAt(point)); return; }
 
     if (moving) {
       var mdx = point[0] - moving.start[0];
@@ -2910,7 +3029,9 @@
   }
 
   function endDraw(event) {
-    var point = svgPoint(event);
+    var point = svgPoint(event) || lastPoint;
+    var canvas = document.getElementById('canvas');
+    if (canvas) canvas.classList.remove('grabbing');
 
     if (moving) {
       var current = moving;
@@ -2923,6 +3044,7 @@
         sendMove(current.item, current.segment);
       }
       renderPlan();
+      setHover(point ? lineAt(point) : null);
       return;
     }
 
@@ -2940,16 +3062,14 @@
     }
     renderPlan();
     if (!line) return;
+    // Отпустили кнопку — магнит срабатывает так же, как во время протяжки.
+    line = magnetizeLine(line).line;
     sendLine(line);
   }
 
   // Линия уходит в Ruby: там она притянется к основным плоскостям модели
   // и станет фасадом.
   function sendLine(line) {
-    if (visibleItems().length >= maxFacades()) {
-      showNote('Больше ' + maxFacades() + ' фасадов нельзя.');
-      return;
-    }
     var a = toWorld([line[0], line[1]]);
     var b = toWorld([line[2], line[3]]);
     if (window.sketchup && typeof sketchup.add_facade === 'function') {
@@ -2985,7 +3105,7 @@
     for (var i = 0; i < items.length; i++) {
       var p = badges[i];
       if (Math.sqrt((p[0] - point[0]) * (p[0] - point[0]) +
-                    (p[1] - point[1]) * (p[1] - point[1])) < 44) {
+                    (p[1] - point[1]) * (p[1] - point[1])) < BADGE_R + 12) {
         toggle(items[i].position);
         return;
       }
@@ -3024,7 +3144,9 @@
       moved = false;
       drag = null;
       moving = null;
+      lastPoint = null;
       renderPlan();
+      setHover(null);
     });
 
     // Браузеры без Pointer Events.
@@ -3068,8 +3190,16 @@
       if (role !== 'orient' && role !== 'ratio') return;
       var item = itemAt(Number(row.getAttribute('data-position')));
       if (!item) return;
-      if (role === 'orient') item.orient = event.target.value;
-      else item.ratio = event.target.value;
+      if (role === 'orient') {
+        // Списки не пересекаются: при смене ориентации берём первую
+        // пропорцию новой ориентации (у «квадрата» она единственная).
+        item.orient = event.target.value;
+        item.ratio = defaultRatio(item.orient);
+        renderRows();
+        renderPlan();
+        return;
+      }
+      item.ratio = event.target.value;
       row.querySelector('[data-role="px"]').textContent = sizeText(item);
     });
   }
@@ -3090,7 +3220,8 @@
       removed: false,
       name: f.name || ('Фасад ' + f.index),
       orient: f.orient || (data && data.defaultOrient) || 'h',
-      ratio: f.ratio || (data && data.defaultRatio) || '3:4',
+      ratio: f.ratio || defaultRatio(f.orient || (data && data.defaultOrient) || 'h'),
+      flip: f.flip === true,
       segment: f.segment || null
     };
   }
@@ -3104,7 +3235,7 @@
     if (!data) return;
     state = (data.facades || []).map(makeItem);
     var count = state.length;
-    var subtitle = 'Фасадов нарисовано: ' + count + ' из ' + maxFacades() + ' — ' +
+    var subtitle = 'Фасадов нарисовано: ' + count + ' — ' +
       (data.scope === 'context' ? 'открытая группа' : 'вся модель') + '. ';
     subtitle += count
       ? 'Тяните линию, чтобы передвинуть её; «⇄» разворачивает фасад.'
@@ -3141,6 +3272,7 @@
     if (payload.name) item.name = payload.name;
     if (payload.orient) item.orient = payload.orient;
     if (payload.ratio) item.ratio = payload.ratio;
+    if (payload.flip !== undefined && payload.flip !== null) item.flip = payload.flip === true;
     if (payload.segment) item.segment = payload.segment;
     renderPlan();
     renderRows();
@@ -3185,6 +3317,8 @@
     toWorld: toWorld,
     dragMarks: function (line) { return dragMarksFor(line); },
     placeBadges: placeBadges,
+    magnetize: function (line) { return magnetizeLine(line); },
+    setHover: setHover,
     pixels: pixels
   };
 
