@@ -3,46 +3,71 @@
 //
 //   node tools/make_auto_preview.mjs
 //
-// Данные — как их отдаёт AutoExport.build_payload: упрощённые превью фасадов
-// и контур здания сверху для схемы с красной линией.
+// Данные — как их отдаёт AutoExport.build_payload: одна схема здания сверху
+// («жучок») и по одной линии стены на каждый найденный фасад. Превью фасадов
+// нет: окно должно открываться мгновенно.
 
 import fs from "node:fs/promises";
 import path from "node:path";
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 
-// Здание с внутренним двором (П-образное): именно для такого случая
-// и нужны секущие плоскости. Схема сверху — та же сетка клеток, что
-// строит AutoFacades#plan_map: двор остаётся пустым.
-const PLAN_GRID = 32;
-const courtyard = (x, y) => x >= 10 && x <= 21 && y >= 12; // клетки двора
-const planCells = [];
-for (let y = 0; y < PLAN_GRID; y++) {
-  for (let x = 0; x < PLAN_GRID; x++) {
-    if (!courtyard(x, y)) planCells.push([x, y]);
-  }
-}
-const plan = { grid: PLAN_GRID, cells: planCells };
+// П-образное здание с внутренним двором: ровно тот случай, ради которого
+// делались внутренние фасады и секущие плоскости.
+const PLAN_GRID = 40;
+const CELL = 1000 / PLAN_GRID;
 
-// Упрощённые фасады: сетка окон на стене (координаты 0..1000).
-function facadePolygons(widthRatio, floors, windows) {
-  const polys = [[[0, 0], [1000, 0], [1000, 1000], [0, 1000]]];
-  const w = 1000 * widthRatio;
-  for (let f = 0; f < floors; f++) {
-    for (let c = 0; c < windows; c++) {
-      const x0 = Math.round(60 + c * (w - 120) / windows);
-      const x1 = Math.round(x0 + (w - 120) / windows * 0.62);
-      const y0 = Math.round(80 + f * (900 / floors));
-      const y1 = Math.round(y0 + (900 / floors) * 0.5);
-      polys.push([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
-    }
-  }
-  return polys;
+// Крылья в координатах схемы (0..1000, ось Y смотрит вниз).
+const wings = [
+  { x0: 100, y0: 100, x1: 380, y1: 880 }, // левое крыло
+  { x0: 620, y0: 100, x1: 900, y1: 880 }, // правое крыло
+  { x0: 100, y0: 100, x1: 900, y1: 380 }  // верхнее крыло
+];
+
+function inWings(x, y) {
+  return wings.some((w) => x >= w.x0 && x <= w.x1 && y >= w.y0 && y <= w.y1);
 }
+
+// Клетки схемы: центр клетки попал в крыло — клетка занята. Двор пустой.
+const cells = [];
+for (let iy = 0; iy < PLAN_GRID; iy++) {
+  for (let ix = 0; ix < PLAN_GRID; ix++) {
+    const cx = (ix + 0.5) * CELL;
+    const cy = (iy + 0.5) * CELL;
+    if (inWings(cx, cy)) cells.push([ix, iy]);
+  }
+}
+
+const plan = { grid: PLAN_GRID, cells };
+
+// Линии стен: { from, to, normal } в тех же координатах 0..1000, что и схема.
+// normal — наружу от стены (для схемы ось Y уже перевёрнута).
+const facades = [
+  { compass: "север", from: [100, 100], to: [900, 100], normal: [0, -1] },
+  { compass: "восток", from: [900, 100], to: [900, 880], normal: [1, 0] },
+  { compass: "юг", from: [620, 880], to: [900, 880], normal: [0, 1] },
+  { compass: "юг", from: [100, 880], to: [380, 880], normal: [0, 1] },
+  { compass: "запад", from: [100, 880], to: [100, 100], normal: [-1, 0] },
+  { compass: "двор", from: [380, 380], to: [380, 880], normal: [1, 0] },
+  { compass: "двор", from: [620, 880], to: [620, 380], normal: [-1, 0] },
+  { compass: "двор", from: [380, 380], to: [620, 380], normal: [0, 1] }
+].map((f, i) => ({
+  index: i + 1,
+  compass: f.compass,
+  name: "Фасад " + (i + 1),
+  pageName: "Фасад " + (i + 1) + " — " + f.compass,
+  aspect: "3:4",
+  selected: true,
+  segment: {
+    from: f.from,
+    to: f.to,
+    normal: f.normal,
+    area: Math.round(Math.hypot(f.to[0] - f.from[0], f.to[1] - f.from[1]) * 3)
+  }
+}));
 
 const payload = {
   scope: "context",
-  scopeText: "открытая группа",
   plan,
   aspects: [
     ["3:4", "3:4 (по умолчанию)"],
@@ -51,26 +76,14 @@ const payload = {
     ["1:1", "1:1"],
     ["4:3", "4:3"],
     ["3:2", "3:2"],
-    ["16:9", "16:9"],
+    ["16:9", "16:9"]
   ],
   defaultAspect: "3:4",
   longestSide: 9999,
-  minSide: 100,
   deleteScenes: true,
   cutSections: true,
   baseName: "Заречная",
-  facades: [
-    { index: 1, compass: "север", normal: [0, 1], polygons: facadePolygons(1, 6, 5) },
-    { index: 2, compass: "восток", normal: [1, 0], polygons: facadePolygons(0.62, 6, 3) },
-    { index: 3, compass: "юг", normal: [0, -1], polygons: facadePolygons(1, 5, 5) },
-    { index: 4, compass: "запад", normal: [-1, 0], polygons: facadePolygons(0.62, 5, 3) },
-  ].map((f) => ({
-    ...f,
-    name: "Фасад " + f.index,
-    pageName: "Фасад " + f.index + " — " + f.compass,
-    aspect: "3:4",
-    selected: true,
-  })),
+  facades
 };
 
 const html = await fs.readFile(path.join(root, "facade_export/html/auto.html"), "utf8");

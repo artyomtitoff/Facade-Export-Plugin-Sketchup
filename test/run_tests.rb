@@ -1645,22 +1645,30 @@ check('Камера смотрит на фасад: direction = -normal',
 check('Фасады идут по кругу (по азимуту)',
       facades.each_cons(2).all? { |a, b| a.index < b.index },
       facades.map(&:index).inspect)
-check('У каждого фасада есть упрощённое превью',
-      facades.all? { |f| f.polygons.any? && f.polygons.first.length >= 3 },
-      facades.map { |f| f.polygons.length }.inspect)
+check('Превью фасадов больше не строятся (быстрое окно)',
+      facades.none? { |f| f.respond_to?(:polygons) },
+      facades.first.members.first(8).inspect)
+check('У каждого фасада есть линия на схеме сверху',
+      facades.all? do |f|
+        seg = f.segment
+        seg && seg['from'].length == 2 && seg['to'].length == 2 &&
+          seg['normal'].length == 2 &&
+          (seg['from'] + seg['to']).all? { |v| v.between?(0.0, 1000.0) }
+      end,
+      facades.map { |f| f.segment && f.segment['from'] }.inspect)
 plan = found[:plan] || {}
 check('Схема сверху построена', (plan['cells'] || []).length > 20, (plan['cells'] || []).length)
-check('Схема — сетка 32 × 32', plan['grid'] == FacadeExport::AutoFacades::PLAN_GRID,
-      plan['grid'].inspect)
+grid = FacadeExport::AutoFacades::PLAN_GRID
+check('Схема — сетка 40 × 40', plan['grid'] == grid && grid == 40, plan['grid'].inspect)
 check('Клетки схемы в пределах сетки',
-      (plan['cells'] || []).all? { |x, y| x.between?(0, 31) && y.between?(0, 31) },
+      (plan['cells'] || []).all? { |x, y| x.between?(0, grid - 1) && y.between?(0, grid - 1) },
       (plan['cells'] || []).first(5).inspect)
 columns = (plan['cells'] || []).map(&:first).uniq.sort
-check('Крыша залита целиком: все 32 колонки',
-      columns == (0..31).to_a,
+check('Крыша залита целиком: все 40 колонок',
+      columns == (0..(grid - 1)).to_a,
       columns.inspect)
-check('Пропорции схемы сохранены (1200×800 → 32×21 клетка)',
-      (plan['cells'] || []).map(&:last).uniq.length.between?(20, 22),
+check('Пропорции схемы сохранены (1200×800 → 40×27 клеток)',
+      (plan['cells'] || []).map(&:last).uniq.length.between?(25, 28),
       (plan['cells'] || []).map(&:last).uniq.length)
 check('Область анализа — вся модель', found[:scope] == :model, found[:scope].inspect)
 check('Имена сцен по сторонам света',
@@ -1680,7 +1688,7 @@ check('Масштаб общий для всех фасадов',
       scales.max - scales.min < 1.0e-6,
       scales.inspect)
 gaps = facades.map do |f|
-  bottom = f.points.map { |p| p.z }.min
+  bottom = detector.extents(f)[:v_min]
   frame_bottom = f.camera.target.z - f.camera.height / 2.0
   ((bottom - frame_bottom) * (f.image_height / f.camera.height)).round
 end
@@ -1704,9 +1712,9 @@ inside = FacadeExport::AutoFacades.new(model, FacadeExport.settings).detect
 check('Внутри группы анализируется группа', inside[:scope] == :context, inside[:scope].inspect)
 check('Внутри группы найдены её 4 фасада', inside[:facades].length == 4,
       inside[:facades].length)
-check('Внутри группы габариты — по группе',
-      inside[:facades].all? { |f| f.points.map(&:z).max < 601 },
-      inside[:facades].map { |f| f.points.map(&:z).max }.inspect)
+check('Внутри группы габариты — по группе, а не по модели',
+      inside[:facades].map(&:area).max < 1_000_000,
+      inside[:facades].map { |f| f.area.round }.inspect)
 model.active_path = []
 
 # Схема сверху не «заливает» разрыв между объёмами.
@@ -1717,7 +1725,7 @@ add_box_faces(model.entities, 400, 400, 300, 800, 0, 0)
 gap_plan = FacadeExport::AutoFacades.new(model, FacadeExport.settings).detect[:plan]
 gap_cells = gap_plan['cells'] || []
 check('Схема сверху не заливает пустоту между объёмами',
-      !gap_cells.any? { |x, _y| x.between?(11, 20) },
+      !gap_cells.any? { |x, _y| x.between?(16, 23) },
       gap_cells.map(&:first).uniq.sort.inspect)
 
 # Скрытая группа не попадает в анализ.
@@ -1738,6 +1746,79 @@ check('Скрытая группа не считается фасадом',
       hidden_result.is_a?(FacadeExport::ExportError),
       hidden_result.inspect)
 
+# Повёрнутое здание: фасады под 30°, а не только по осям.
+def add_rotated_box_faces(entities, size_x, size_y, size_z, angle_deg, offset_x = 0.0, offset_y = 0.0)
+  radians = angle_deg * Math::PI / 180.0
+  cos = Math.cos(radians)
+  sin = Math.sin(radians)
+  rotate = lambda do |x, y, z|
+    Geom::Point3d.new(offset_x + x * cos - y * sin, offset_y + x * sin + y * cos, z)
+  end
+  faces = [
+    [[0, 0, 0], [0, size_y, 0], [size_x, size_y, 0], [size_x, 0, 0]],
+    [[0, 0, size_z], [size_x, 0, size_z], [size_x, size_y, size_z], [0, size_y, size_z]],
+    [[0, 0, 0], [size_x, 0, 0], [size_x, 0, size_z], [0, 0, size_z]],
+    [[0, size_y, 0], [0, size_y, size_z], [size_x, size_y, size_z], [size_x, size_y, 0]],
+    [[0, 0, 0], [0, 0, size_z], [0, size_y, size_z], [0, size_y, 0]],
+    [[size_x, 0, 0], [size_x, size_y, 0], [size_x, size_y, size_z], [size_x, 0, size_z]]
+  ]
+  faces.each do |list|
+    entities.add(Sketchup::Face.new(list.map { |corner| rotate.call(*corner) }))
+  end
+  entities
+end
+
+fresh_settings
+model = new_model
+model.entities.clear
+add_rotated_box_faces(model.entities, 1200, 800, 600, 30)
+rotated = FacadeExport::AutoFacades.new(model, FacadeExport.settings).detect[:facades]
+check('Повёрнутое на 30° здание: найдены 4 фасада', rotated.length == 4, rotated.length)
+check('Направления не привязаны к 90°: есть наклонные нормали',
+      rotated.count { |f| f.normal.x.abs > 0.1 && f.normal.y.abs > 0.1 } == 4,
+      rotated.map { |f| [f.normal.x.round(3), f.normal.y.round(3)] }.inspect)
+check('Нормали повёрнуты на 30°',
+      rotated.all? do |f|
+        expected = [[Math.cos(Math::PI / 6), Math.sin(Math::PI / 6)],
+                    [-Math.sin(Math::PI / 6), Math.cos(Math::PI / 6)],
+                    [-Math.cos(Math::PI / 6), -Math.sin(Math::PI / 6)],
+                    [Math.sin(Math::PI / 6), -Math.cos(Math::PI / 6)]]
+        expected.any? do |(x, y)|
+          (f.normal.x - x).abs < 0.01 && (f.normal.y - y).abs < 0.01
+        end
+      end,
+      rotated.map { |f| [f.normal.x.round(3), f.normal.y.round(3)] }.inspect)
+
+# П-образное здание: внутренний двор. Внутренние фасады двора тоже нужны.
+fresh_settings
+model = new_model
+model.entities.clear
+add_box_faces(model.entities, 1000, 300, 600, 0, 0, 0)      # нижнее крыло
+add_box_faces(model.entities, 300, 1000, 600, 0, 300, 0)    # левое крыло
+add_box_faces(model.entities, 300, 1000, 600, 700, 300, 0)  # правое крыло
+detector = FacadeExport::AutoFacades.new(model, FacadeExport.settings)
+courtyard = detector.detect[:facades]
+check('У П-образного здания фасадов больше четырёх', courtyard.length > 4,
+      courtyard.map(&:index).inspect)
+inner = courtyard.select do |f|
+  ((f.normal.x - 1.0).abs < 0.01 && f.depth.between?(290.0, 310.0)) ||
+    ((f.normal.x + 1.0).abs < 0.01 && f.depth.between?(-710.0, -690.0)) ||
+    ((f.normal.y - 1.0).abs < 0.01 && f.depth.between?(290.0, 310.0))
+end
+check('Найдены внутренние фасады двора (три стены)', inner.length == 3,
+      courtyard.map { |f| [f.normal.x.round(1), f.normal.y.round(1), f.depth.round] }.inspect)
+check('Внешние фасады тоже на месте',
+      courtyard.any? { |f| (f.normal.y + 1.0).abs < 0.01 && f.depth.abs < 1.0 } &&
+      courtyard.any? { |f| (f.normal.x + 1.0).abs < 0.01 && f.depth.abs < 1.0 } &&
+      courtyard.any? { |f| (f.normal.x - 1.0).abs < 0.01 && (f.depth - 1000.0).abs < 1.0 } &&
+      courtyard.any? { |f| (f.normal.y - 1.0).abs < 0.01 && (f.depth - 1300.0).abs < 1.0 },
+      courtyard.map { |f| [f.normal.x.round(1), f.normal.y.round(1), f.depth.round] }.inspect)
+inner_plan = detector.detect[:plan]
+# Ось Y на схеме перевёрнута: двор занимает середину листа (строки 1..29).
+check('Двор на схеме остаётся пустым',
+      !(inner_plan['cells'] || []).any? { |x, y| x.between?(11, 20) && y.between?(1, 29) },
+      (inner_plan['cells'] || []).select { |x, _y| x.between?(11, 20) }.first(6).inspect)
+
 section 'Автоматический вывод: сечения и сцены'
 
 fresh_settings
@@ -1757,14 +1838,33 @@ check('Нормаль плоскости смотрит в здание',
         n = f.section_plane.plane_normal
         (n.x * f.normal.x + n.y * f.normal.y + 1.0).abs < 1.0e-6
       end)
-check('Плоскость стоит перед фасадом, со стороны камеры',
+check('Плоскость стоит за фасадом: фасад и его детали не отрезаются',
       facades.all? do |f|
-        facade_d = f.points.map { |p| p.x * f.normal.x + p.y * f.normal.y }.max
+        facade_d = detector.extents(f)[:d_min]
         plane = f.section_plane.point
         plane_d = plane.x * f.normal.x + plane.y * f.normal.y
-        plane_d > facade_d && (plane_d - facade_d) < 10.0
+        plane_d < facade_d && (facade_d - plane_d) < 10.0
       end,
       facades.map { |f| f.section_plane.point.to_a.map { |v| v.round(2) } }.inspect)
+check('Камера стоит снаружи фасада, а не внутри здания',
+      facades.all? do |f|
+        camera_d = f.camera.eye.x * f.normal.x + f.camera.eye.y * f.normal.y
+        facade_d = detector.extents(f)[:d_max]
+        camera_d > facade_d
+      end,
+      facades.map { |f| (f.camera.eye.x * f.normal.x + f.camera.eye.y * f.normal.y).round }.inspect)
+check('Камера стоит близко к фасаду',
+      facades.all? do |f|
+        distance = Math.sqrt((f.camera.eye.x - f.camera.target.x)**2 +
+                             (f.camera.eye.y - f.camera.target.y)**2 +
+                             (f.camera.eye.z - f.camera.target.z)**2)
+        distance < 6.0 * f.camera.height
+      end,
+      facades.map do |f|
+        d = Math.sqrt((f.camera.eye.x - f.camera.target.x)**2 +
+                      (f.camera.eye.y - f.camera.target.y)**2)
+        (d / f.camera.height).round(2)
+      end.inspect)
 
 detector.create_scenes!(facades)
 pages = model.pages
@@ -1916,8 +2016,15 @@ check('Кнопка отдаёт данные в окно', !payload.nil?)
 check('В данных есть план здания', (payload['plan']['cells'] || []).any?,
       payload['plan'].inspect[0, 80])
 check('В данных есть 4 фасада', payload['facades'].length == 4)
-check('У фасада в окне есть нормаль и превью',
-      payload['facades'].all? { |f| f['normal'].length == 2 && f['polygons'].any? })
+check('У фасада в окне есть линия на схеме и нормаль',
+      payload['facades'].all? do |f|
+        seg = f['segment']
+        seg && seg['from'].length == 2 && seg['to'].length == 2 &&
+          seg['normal'].length == 2
+      end,
+      payload['facades'].map { |f| f['segment'].inspect[0, 40] }.first(2).inspect)
+check('В данных окна нет превью фасадов',
+      payload['facades'].none? { |f| f.key?('polygons') })
 check('Соотношение по умолчанию отдано окну', payload['defaultAspect'] == '3:4',
       payload['defaultAspect'].inspect)
 check('В списке соотношений есть 3:4 и 1:1',
@@ -1947,6 +2054,119 @@ check('Пустое имя заменяется именем сцены', chosen
       chosen[1].name)
 check('Битое соотношение заменяется на 3:4', chosen[1].aspect == '3:4', chosen[1].aspect)
 check('Несуществующий фасад игнорируется', chosen.none? { |f| f.index == 9 })
+
+section 'Автоматический вывод: папка раньше камер, отчёт всегда'
+
+# Окно сохранения должно открываться до любой тяжёлой работы: камеры и
+# секущие плоскости строятся только после выбора папки.
+module AutoOrderSpy
+  def ask_destination(settings, base)
+    facades = FacadeExport::AutoExport.instance_variable_get(:@facades) || []
+    $cameras_before_dialog = facades.any?(&:camera)
+    $planes_before_dialog = Sketchup.active_model.entities.any? do |e|
+      e.is_a?(Sketchup::SectionPlane)
+    end
+    super
+  end
+end
+FacadeExport::Dialogs.singleton_class.prepend(AutoOrderSpy)
+
+clean_out
+fresh_settings
+model = box_facade_model
+UI.messages = []
+UI.savepanel_result = File.join(OUT_ROOT, 'Авто.png')
+payload = FacadeExport::AutoExport.start
+original_camera = model.active_view.camera
+jobs = FacadeExport::Exporter.output_jobs(FacadeExport.settings).length
+choice = JSON.generate(
+  'facades' => payload['facades'].map do |f|
+    { 'index' => f['index'], 'selected' => true, 'name' => f['name'], 'aspect' => '3:4' }
+  end
+)
+auto_result = FacadeExport::AutoExport.export(choice)
+
+check('До окна сохранения камеры не строятся', $cameras_before_dialog == false,
+      $cameras_before_dialog.inspect)
+check('До окна сохранения плоскости не создаются', $planes_before_dialog == false,
+      $planes_before_dialog.inspect)
+check('Авто-экспорт записал файлы', auto_result && auto_result.files.length == 4 * jobs,
+      auto_result && auto_result.files.length)
+check('Окно отчёта показано', UI.messages.any? { |m| m.to_s.include?('Экспорт завершён') },
+      UI.messages.map { |m| m.to_s.lines.first }.inspect)
+check('Вид возвращён точно таким, как был до нажатия',
+      model.active_view.camera.equal?(original_camera))
+check('Секущие плоскости после экспорта убраны',
+      model.entities.none? { |e| e.is_a?(Sketchup::SectionPlane) })
+check('Временные сцены не создаются', model.pages.length.zero?, model.pages.length)
+check('Файлы лежат в выбранной папке',
+      auto_result.files.all? { |path| File.dirname(path) == OUT_ROOT })
+
+# Отмена окна сохранения: ничего не строим и ничего не пишем.
+clean_out
+UI.messages = []
+UI.savepanel_result = nil
+payload = FacadeExport::AutoExport.start
+facades = FacadeExport::AutoExport.instance_variable_get(:@facades)
+UI.savepanel_result = nil
+cancelled = FacadeExport::AutoExport.export(
+  JSON.generate('facades' => payload['facades'].map do |f|
+    { 'index' => f['index'], 'selected' => true, 'name' => f['name'], 'aspect' => '3:4' }
+  end)
+)
+check('Отмена папки не строит камеры', cancelled.nil? && facades.none?(&:camera))
+check('Отмена папки не создаёт плоскости',
+      model.entities.none? { |e| e.is_a?(Sketchup::SectionPlane) })
+check('Отмена папки не пишет файлы', Dir.entries(OUT_ROOT).none? { |e| e.end_with?('.png') })
+
+# Сбой экспорта: отчёт всё равно появляется, вид возвращается.
+module BoomExporter
+  def run
+    raise FacadeExport::ExportError, 'тестовая ошибка экспорта' if $boom
+    super
+  end
+end
+FacadeExport::Exporter.prepend(BoomExporter)
+
+clean_out
+UI.messages = []
+UI.savepanel_result = File.join(OUT_ROOT, 'Сбой.png')
+payload = FacadeExport::AutoExport.start
+original_camera = model.active_view.camera
+$boom = true
+FacadeExport::AutoExport.export(
+  JSON.generate('facades' => payload['facades'].map do |f|
+    { 'index' => f['index'], 'selected' => true, 'name' => f['name'], 'aspect' => '3:4' }
+  end)
+)
+$boom = false
+check('При сбое показано сообщение об ошибке',
+      UI.messages.any? { |m| m.to_s.include?('тестовая ошибка экспорта') },
+      UI.messages.map { |m| m.to_s.lines.first }.inspect)
+check('После сбоя вид возвращён', model.active_view.camera.equal?(original_camera))
+check('После сбоя плоскости убраны',
+      model.entities.none? { |e| e.is_a?(Sketchup::SectionPlane) })
+UI.savepanel_result = nil
+
+# Ошибка внутри колбэка окна не должна пропадать молча.
+module BoomAuto
+  def export(_payload)
+    raise 'тестовый сбой окна' if $boom_auto
+    super
+  end
+end
+FacadeExport::AutoExport.singleton_class.prepend(BoomAuto)
+UI.messages = []
+FacadeExport::AutoExport.start
+dialog = FacadeExport::Dialogs.instance_variable_get(:@auto_dialog)
+$boom_auto = true
+dialog.callbacks['export'].call(nil, '{}')
+$boom_auto = false
+check('Сбой в колбэке окна показывается пользователю',
+      UI.messages.any? { |m| m.to_s.include?('тестовый сбой окна') },
+      UI.messages.map { |m| m.to_s.lines.first }.inspect)
+check('Окно закрывается перед экспортом', dialog.close == true)
+
 
 # ------------------------------------------------------------------ итог
 

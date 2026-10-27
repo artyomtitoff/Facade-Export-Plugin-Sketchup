@@ -241,26 +241,50 @@ module Sketchup
     end
   end
 
-  # Грань: границы строятся по её вершинам.
+  # Грань. Как и в SketchUp, нормаль, площадь и габариты — «родные» и дешёвые:
+  # считаются один раз при создании. Дорогой вызов — только #vertices
+  # (создание обёрток Vertex), его и считаем в тестах на скорость.
   class Face < Sketchup::Entity
-    attr_reader :loops
+    attr_reader :loops, :vertex_calls
 
     def initialize(vertices)
       super()
       @loops = [Sketchup::Loop.new(vertices)]
+      points = @loops.first.vertices.map(&:position)
+      @bounds = Geom::BoundingBox.new(points)
+      @normal = compute_normal(points)
+      @area = compute_area(points)
+      @vertex_calls = 0
     end
 
     def vertices
+      @vertex_calls += 1
       @loops.first.vertices
     end
 
-    # Нормаль грани: по первым трём несовпадающим вершинам.
+    def bounds
+      @bounds
+    end
+
     def normal
-      pts = vertices.map(&:position)
-      return nil if pts.length < 3
-      origin = pts[0]
-      pts[1..-1].each_with_index do |b, i|
-        c = pts[i + 2]
+      @normal
+    end
+
+    def area
+      @area
+    end
+
+    def reset_vertex_calls
+      @vertex_calls = 0
+    end
+
+    private
+
+    def compute_normal(points)
+      return nil if points.length < 3
+      origin = points[0]
+      points[1..-1].each_with_index do |b, i|
+        c = points[i + 2]
         next if c.nil?
         cross = (b - origin).cross(c - origin)
         next if cross.length < 1.0e-9
@@ -269,9 +293,15 @@ module Sketchup
       nil
     end
 
-    # Как в SketchUp: габариты грани — по её вершинам.
-    def bounds
-      Geom::BoundingBox.new(@loops.flat_map { |l| l.vertices.map(&:position) })
+    def compute_area(points)
+      return 0.0 if points.length < 3
+      sum = Geom::Vector3d.new(0, 0, 0)
+      origin = points[0]
+      (1...(points.length - 1)).each do |i|
+        cross = (points[i] - origin).cross(points[i + 1] - origin)
+        sum = Geom::Vector3d.new(sum.x + cross.x, sum.y + cross.y, sum.z + cross.z)
+      end
+      sum.length / 2.0
     end
   end
 
@@ -1142,6 +1172,10 @@ module UI
 
   class HtmlDialog
     STYLE_DIALOG = 1
+
+    # Колбэки доступны тестам: так проверяется, что окно действительно
+    # отдаёт данные в Ruby и что ошибки в колбэке не пропадают молча.
+    attr_reader :callbacks
 
     def initialize(_options = {})
       @callbacks = {}
