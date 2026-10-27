@@ -37,10 +37,6 @@ const defaults = {
     background: "#FFFFFF",
     hide_sky: true, hide_ground: true, hide_watermarks: true, last_directory: "",
   },
-  auto: {
-    delete_scenes: true, cut_sections: true, create_scenes: true,
-    orient: "h", ratio: "4:3", scene_prefix: "Фасад",
-  },
   maps: [
     {
       key: "texture", kind: "standard", title: "Текстура", enabled: true, render_mode: "shaded",
@@ -95,76 +91,12 @@ const isHidden = (el) => !!el.closest(".is-hidden");
 
 console.log("Окно настроек (settings.html):");
 check("Руби-мост вызвал ready", calls.ready === 1);
-check("Вкладки построены: Экспорт + Авто-фасады + 4 карты",
-  doc.querySelectorAll("nav button[data-tab]").length === 6,
+check("Вкладки построены: Экспорт + 4 карты", doc.querySelectorAll("nav button[data-tab]").length === 5,
   doc.querySelectorAll("nav button[data-tab]").length);
 check("Названия вкладок", [...doc.querySelectorAll("nav button[data-tab]")].map((b) => b.textContent).join("|")
-  === "Экспорт|Авто-фасады|Текстура|Линии|Тени|Окна",
+  === "Экспорт|Текстура|Линии|Тени|Окна",
   [...doc.querySelectorAll("nav button[data-tab]")].map((b) => b.textContent).join("|"));
 check("Есть кнопка «+» для своей карты", !!q("nav button[data-add-map]"));
-
-
-/* --------------------------------------- вкладка «Авто-фасады» */
-
-const autoTab = q("#tab-auto");
-check("Авто: вкладка есть", !!autoTab);
-check("Авто: ориентация по умолчанию — горизонтальная",
-  byPath("auto.orient")?.value === "h", byPath("auto.orient")?.value);
-const autoOrients = [...byPath("auto.orient").querySelectorAll("option")]
-  .map((o) => o.value);
-check("Авто: есть горизонтальное, вертикальное и квадрат",
-  ["h", "v", "sq"].every((v) => autoOrients.includes(v)), autoOrients.join(", "));
-check("Авто: пропорции по умолчанию — 4:3",
-  byPath("auto.ratio")?.value === "4:3", byPath("auto.ratio")?.value);
-const autoRatios = [...byPath("auto.ratio").querySelectorAll("option")]
-  .map((o) => o.value);
-check("Авто: у горизонтального кадра только широкие пропорции",
-  autoRatios.join(",") === "4:3,3:2,16:9,2:1,3:1", autoRatios.join(","));
-check("Авто: вертикальных пар в горизонтальном списке нет",
-  !autoRatios.includes("9:16") && !autoRatios.includes("3:4"));
-check("Авто: 4:3 подписано как значение по умолчанию",
-  [...byPath("auto.ratio").querySelectorAll("option")]
-    .some((o) => o.value === "4:3" && o.textContent.includes("по умолчанию")));
-// Сменили ориентацию — список пропорций сразу стал вертикальным.
-const orientSelect = byPath("auto.orient");
-orientSelect.value = "v";
-fire(orientSelect, "change");
-const verticalRatios = [...byPath("auto.ratio").querySelectorAll("option")]
-  .map((o) => o.value);
-check("Авто: для вертикального кадра — только высокие пропорции",
-  verticalRatios.join(",") === "3:4,2:3,9:16,1:2,1:3", verticalRatios.join(","));
-check("Авто: при смене ориентации выбрана её первая пара",
-  byPath("auto.ratio").value === "3:4", byPath("auto.ratio").value);
-orientSelect.value = "sq";
-fire(orientSelect, "change");
-check("Авто: у квадрата единственная пара — 1:1",
-  [...byPath("auto.ratio").querySelectorAll("option")].map((o) => o.value).join(",") === "1:1");
-check("Авто: у квадрата пропорция заблокирована", byPath("auto.ratio").disabled === true);
-orientSelect.value = "h";
-fire(orientSelect, "change");
-check("Авто: вернулись к горизонтальному списку",
-  byPath("auto.ratio").value === "4:3" && byPath("auto.ratio").disabled === false,
-  byPath("auto.ratio").value);
-check("Авто: старого «соотношения» больше нет", byPath("auto.aspect") === null);
-check("Авто: минимальной площади больше нет", byPath("auto.min_area") === null);
-check("Авто: сцены создаются по умолчанию", byPath("auto.create_scenes")?.checked === true);
-check("Авто: сцены удаляются после экспорта по умолчанию",
-  byPath("auto.delete_scenes")?.checked === true);
-check("Авто: подрезка сечением включена по умолчанию",
-  byPath("auto.cut_sections")?.checked === true);
-check("Авто: поля «Максимум нарисованных фасадов» больше нет",
-  byPath("auto.max_facades") === null);
-check("Авто: про предел фасадов в тексте ни слова",
-  !autoTab.textContent.includes("Максимум") && !autoTab.textContent.includes("30"),
-  autoTab.textContent.slice(0, 200));
-check("Авто: начало имени сцены — «Фасад»", byPath("auto.scene_prefix")?.value === "Фасад",
-  byPath("auto.scene_prefix")?.value);
-check("Авто: подсказка про временные сцены",
-  autoTab.textContent.includes("сцены временные"));
-check("Авто: сказано, что фасады рисует пользователь",
-  autoTab.textContent.includes("проводите линии мышью"), autoTab.textContent.slice(0, 120));
-check("Авто: сказано, что фасады сохраняются в файле",
-  autoTab.textContent.includes("сохраняются в файле"));
 
 /* ------------------------------------------- вкладка «Экспорт» */
 
@@ -334,12 +266,9 @@ check("Прокручивается только содержимое (main с m
 
 const tabButtons = doc.querySelectorAll("nav button[data-tab]");
 check("Первая вкладка активна", tabButtons[0].classList.contains("active"));
-fire(tabButtons[1], "click");
-check("По клику открывается вкладка «Авто-фасады»",
-  doc.getElementById("tab-auto")?.classList.contains("active"));
-fire(tabButtons[3], "click");
+fire(tabButtons[2], "click");
 check("По клику открывается вкладка карты", doc.getElementById("tab-map-1")?.classList.contains("active"));
-check("Активная вкладка подсвечена", tabButtons[3].classList.contains("active"));
+check("Активная вкладка подсвечена", tabButtons[2].classList.contains("active"));
 
 /* --------------------------------------------- изменение и сохранение */
 
@@ -383,7 +312,7 @@ check("Остальные значения не потеряны",
 /* ---------------------------------------------- своя карта (п. 4, 13) */
 
 fire(q("nav button[data-add-map]"), "click");
-check("Кнопка «+» добавляет вкладку", doc.querySelectorAll("nav button[data-tab]").length === 7,
+check("Кнопка «+» добавляет вкладку", doc.querySelectorAll("nav button[data-tab]").length === 6,
   doc.querySelectorAll("nav button[data-tab]").length);
 const customTab = doc.querySelector("nav button[data-tab='map-4']");
 check("Новая вкладка называется «Своя карта 1»", customTab?.textContent === "Своя карта 1",
@@ -433,12 +362,9 @@ check("Своя карта: перекраска стекла и цвет сох
   saved?.maps?.[4]?.glass_highlight === true && saved?.maps?.[4]?.tinted_h === 210,
   `${saved?.maps?.[4]?.glass_highlight} / ${saved?.maps?.[4]?.tinted_h}`);
 check("Своя карта: текстуры выключены для каркаса", saved?.maps?.[4]?.textures === false);
-check("Авто: настройки сохраняются", saved?.auto?.orient === "h" &&
-  saved?.auto?.ratio === "4:3" && saved?.auto?.delete_scenes === true &&
-  !("max_facades" in (saved?.auto || {})), JSON.stringify(saved?.auto));
 
 fire(q("button[data-remove-map='4']"), "click");
-check("Кнопка удаления убирает карту", doc.querySelectorAll("nav button[data-tab]").length === 6,
+check("Кнопка удаления убирает карту", doc.querySelectorAll("nav button[data-tab]").length === 5,
   doc.querySelectorAll("nav button[data-tab]").length);
 fire(doc.getElementById("btn-save"), "click");
 saved = JSON.parse(calls.save);

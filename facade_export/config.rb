@@ -49,44 +49,6 @@ module FacadeExport
 
     DEFAULT_ASPECT = '4:3'.freeze
 
-    # Ориентация кадра: выбирается первой, а уже потом пропорции.
-    AUTO_ORIENTS = {
-      'h'  => 'горизонтальное',
-      'v'  => 'вертикальное',
-      'sq' => 'квадрат'
-    }.freeze
-
-    # Пропорции кадра для авто-вывода. Ориентация выбирается ПЕРВОЙ, поэтому
-    # список пропорций зависит от неё: у горизонтального кадра только широкие
-    # варианты, у вертикального — только высокие. Одинаковых по смыслу пар
-    # (16:9 для вертикального кадра и т. п.) в списке нет. У квадрата вариант
-    # единственный — 1:1.
-    AUTO_RATIOS_H = {
-      '4:3'  => [4, 3],
-      '3:2'  => [3, 2],
-      '16:9' => [16, 9],
-      '2:1'  => [2, 1],
-      '3:1'  => [3, 1]
-    }.freeze
-
-    AUTO_RATIOS_V = {
-      '3:4'  => [3, 4],
-      '2:3'  => [2, 3],
-      '9:16' => [9, 16],
-      '1:2'  => [1, 2],
-      '1:3'  => [1, 3]
-    }.freeze
-
-    AUTO_RATIOS_SQ = { '1:1' => [1, 1] }.freeze
-
-    # Все пары вместе — для проверок и для старых файлов настроек.
-    AUTO_RATIOS = AUTO_RATIOS_H.merge(AUTO_RATIOS_V).merge(AUTO_RATIOS_SQ).freeze
-
-    AUTO_DEFAULT_ORIENT = 'h'.freeze
-    AUTO_DEFAULT_RATIO  = '4:3'.freeze
-    AUTO_DEFAULT_RATIO_V  = '3:4'.freeze
-    AUTO_DEFAULT_RATIO_SQ = '1:1'.freeze
-
     # Пределы стороны изображения (ограничение SketchUp — 16000).
     MAX_IMAGE_SIDE = 16_000
     MIN_IMAGE_SIDE = 100
@@ -114,48 +76,6 @@ module FacadeExport
 
     def self.aspect_ratio(name)
       ASPECTS[name.to_s] || ASPECTS[DEFAULT_ASPECT]
-    end
-
-    # Список пропорций, допустимых для этой ориентации кадра.
-    def self.auto_ratios_for(orient)
-      case auto_orient(orient)
-      when 'v'  then AUTO_RATIOS_V
-      when 'sq' then AUTO_RATIOS_SQ
-      else AUTO_RATIOS_H
-      end
-    end
-
-    # Пропорции авто-фасада: [ширина, высота] в долях. Берём из списка своей
-    # ориентации; чужая пара (например 9:16 у горизонтального кадра) заменяется
-    # значением по умолчанию — так в кадре не бывает «вертикального 16:9».
-    def self.auto_ratio(name, orient = nil)
-      key = name.to_s
-      list = orient.nil? ? AUTO_RATIOS : auto_ratios_for(orient)
-      return list[key] if list.key?(key)
-      return AUTO_RATIOS[key] if orient.nil? && AUTO_RATIOS.key?(key)
-      list[auto_default_ratio(orient)]
-    end
-
-    def self.auto_default_ratio(orient)
-      case auto_orient(orient)
-      when 'v'  then AUTO_DEFAULT_RATIO_V
-      when 'sq' then AUTO_DEFAULT_RATIO_SQ
-      else AUTO_DEFAULT_RATIO
-      end
-    end
-
-    def self.auto_orient(name)
-      key = name.to_s
-      AUTO_ORIENTS.key?(key) ? key : AUTO_DEFAULT_ORIENT
-    end
-
-    # Имя пропорции, приведённое к списку своей ориентации.
-    def self.auto_ratio_name(name, orient = nil)
-      key = name.to_s
-      list = orient.nil? ? AUTO_RATIOS : auto_ratios_for(orient)
-      return key if list.key?(key)
-      return key if orient.nil? && AUTO_RATIOS.key?(key)
-      auto_default_ratio(orient)
     end
 
     # ---------------------------------------------------------------- defaults
@@ -197,24 +117,6 @@ module FacadeExport
         'main_h'    => 125, 'main_s'    => 100, 'main_l'    => 50,
         'tinted_h'  => 180, 'tinted_s'  => 100, 'tinted_l'  => 50,
         'railing_h' => 300, 'railing_s' => 100, 'railing_l' => 50
-      }
-    end
-
-    # Настройки вкладки «Авто-фасады» (кнопка «Автоматический вывод фасада»).
-    def self.default_auto
-      {
-        # Сцены живут только на время экспорта; можно оставить их в модели.
-        'delete_scenes'   => true,
-        # Секущая плоскость параллельно фасаду — убирает лишнюю геометрию
-        # (внутренние дворы, соседние крылья) из каждого кадра.
-        'cut_sections'    => true,
-        # Кадр по умолчанию для новых фасадов: горизонтальный, 4:3.
-        'orient'          => AUTO_DEFAULT_ORIENT,
-        'ratio'           => AUTO_DEFAULT_RATIO,
-        # Имя сцены: «Фасад 1 — Север».
-        'scene_prefix'    => 'Фасад',
-        # Создавать сцены перед экспортом.
-        'create_scenes'   => true
       }
     end
 
@@ -285,7 +187,6 @@ module FacadeExport
       {
         'version' => SETTINGS_VERSION,
         'export'  => default_export,
-        'auto'    => default_auto,
         'maps'    => default_maps
       }
     end
@@ -387,15 +288,6 @@ module FacadeExport
       export[key.to_s]
     end
 
-    def auto
-      @data['auto'] ||= Config.default_auto
-    end
-
-    # Значение настройки вкладки «Авто-фасады».
-    def auto_val(key)
-      auto[key.to_s]
-    end
-
     def maps
       @data['maps']
     end
@@ -443,8 +335,6 @@ module FacadeExport
       end
       e['background'] = '#FFFFFF' if e['background'].to_s.strip.empty?
 
-      normalize_auto!
-
       list = maps
       unless list.is_a?(Array) && !list.empty?
         @data['maps'] = Config.default_maps
@@ -477,24 +367,6 @@ module FacadeExport
     end
 
     private
-
-    def normalize_auto!
-      a = @data['auto']
-      unless a.is_a?(Hash)
-        @data['auto'] = Config.default_auto
-        return
-      end
-      %w[delete_scenes cut_sections create_scenes].each { |key| a[key] = truthy(a[key]) }
-      a['orient'] = Config.auto_orient(a['orient'])
-      a['ratio'] = Config.auto_ratio_name(a['ratio'], a['orient'])
-      # Ключи прошлых версий: единый «aspect», минимальная площадь и предел
-      # числа нарисованных фасадов — ограничений больше нет.
-      a.delete('aspect')
-      a.delete('min_area')
-      a.delete('max_facades')
-      prefix = a['scene_prefix'].to_s.strip
-      a['scene_prefix'] = 'Фасад' if prefix.empty?
-    end
 
     # Настройки старых версий (до 1.5.0, т.е. и 1.5.1): «Оставлять небо/землю» превратились
     # в «Скрывать небо/землю». Старые ключи удаляются ниже.
