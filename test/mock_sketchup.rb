@@ -31,11 +31,6 @@ module Geom
       self
     end
 
-    # Перенос на вектор не влияет — как в SketchUp для сдвига.
-    def transform(_transformation)
-      Geom::Vector3d.new(@x, @y, @z)
-    end
-
     def normalize
       copy = Geom::Vector3d.new(@x, @y, @z)
       copy.normalize!
@@ -190,11 +185,6 @@ end
 module Sketchup
   # Простейшие сущности модели (для проверки экспорта из открытой группы).
   class Entity
-    # Как в SketchUp: устойчивый идентификатор, который сохраняется в файле.
-    def persistent_id
-      Sketchup.next_entity_id!
-      @persistent_id
-    end
     attr_accessor :hidden, :bounds, :layer
 
     def initialize
@@ -246,67 +236,22 @@ module Sketchup
     end
   end
 
-  # Грань. Как и в SketchUp, нормаль, площадь и габариты — «родные» и дешёвые:
-  # считаются один раз при создании. Дорогой вызов — только #vertices
-  # (создание обёрток Vertex), его и считаем в тестах на скорость.
+  # Грань: границы строятся по её вершинам.
   class Face < Sketchup::Entity
-    attr_reader :loops, :vertex_calls
+    attr_reader :loops
 
     def initialize(vertices)
       super()
       @loops = [Sketchup::Loop.new(vertices)]
-      points = @loops.first.vertices.map(&:position)
-      @bounds = Geom::BoundingBox.new(points)
-      @normal = compute_normal(points)
-      @area = compute_area(points)
-      @vertex_calls = 0
     end
 
     def vertices
-      @vertex_calls += 1
       @loops.first.vertices
     end
 
+    # Как в SketchUp: габариты грани — по её вершинам.
     def bounds
-      @bounds
-    end
-
-    def normal
-      @normal
-    end
-
-    def area
-      @area
-    end
-
-    def reset_vertex_calls
-      @vertex_calls = 0
-    end
-
-    private
-
-    def compute_normal(points)
-      return nil if points.length < 3
-      origin = points[0]
-      points[1..-1].each_with_index do |b, i|
-        c = points[i + 2]
-        next if c.nil?
-        cross = (b - origin).cross(c - origin)
-        next if cross.length < 1.0e-9
-        return cross.normalize
-      end
-      nil
-    end
-
-    def compute_area(points)
-      return 0.0 if points.length < 3
-      sum = Geom::Vector3d.new(0, 0, 0)
-      origin = points[0]
-      (1...(points.length - 1)).each do |i|
-        cross = (points[i] - origin).cross(points[i + 1] - origin)
-        sum = Geom::Vector3d.new(sum.x + cross.x, sum.y + cross.y, sum.z + cross.z)
-      end
-      sum.length / 2.0
+      Geom::BoundingBox.new(@loops.flat_map { |l| l.vertices.map(&:position) })
     end
   end
 
@@ -400,8 +345,6 @@ module Sketchup
     end
 
     def add(entity)
-      # Как в SketchUp: секущая плоскость помнит свой контекст.
-      entity.owner = self if entity.is_a?(Sketchup::SectionPlane) && entity.respond_to?(:owner=)
       @list << entity
       self
     end
@@ -413,32 +356,6 @@ module Sketchup
 
     def length
       @list.length
-    end
-
-    def delete(entity)
-      @list.delete(entity)
-      self
-    end
-
-    # Как в SketchUp: плоскость сечения добавляется в набор сущностей.
-    def add_section_plane(point, normal)
-      plane = Sketchup::SectionPlane.new(true, point, normal)
-      plane.owner = self
-      @list << plane
-      plane
-    end
-
-    # В каждом контексте активна только одна плоскость сечения.
-    def active_section_plane
-      @list.find { |e| e.is_a?(Sketchup::SectionPlane) && e.active? }
-    end
-
-    def active_section_plane=(plane)
-      @list.each do |e|
-        next unless e.is_a?(Sketchup::SectionPlane)
-        e.active = (e.equal?(plane))
-      end
-      plane
     end
   end
 
@@ -460,15 +377,9 @@ module Sketchup
   class Dimension < Sketchup::Entity; end
 
   class SectionPlane < Sketchup::Entity
-    attr_accessor :name, :owner
-    attr_reader :point, :plane_normal
-
-    def initialize(active = true, point = nil, normal = nil)
+    def initialize(active = true)
       super()
       @active = active
-      @point = point
-      @plane_normal = normal
-      @owner = nil
     end
 
     def active?
@@ -477,31 +388,6 @@ module Sketchup
 
     def active=(value)
       @active = value
-    end
-
-    def activate
-      @owner.each { |e| e.active = false if e.is_a?(Sketchup::SectionPlane) } if @owner
-      @active = true
-      true
-    end
-
-    def visible=(value)
-      @hidden = !value
-    end
-
-    def erase!
-      @owner.delete(self) if @owner
-      @erased = true
-      true
-    end
-
-    def valid?
-      !@erased
-    end
-
-    # Как в SketchUp: контекст, в котором лежит плоскость.
-    def parent
-      @owner
     end
   end
 
@@ -521,15 +407,6 @@ module Sketchup
 end
 
 module Sketchup
-  # Сквозной счётчик persistent_id (как в SketchUp — уникален в файле).
-  def self.next_entity_id!
-    @entity_seq = (@entity_seq || 0) + 1
-  end
-
-  def self.reset_entity_ids!
-    @entity_seq = 0
-  end
-
   COLOR_NAMES = %w[red green blue alpha].freeze
 
   class Color
@@ -801,8 +678,6 @@ module Sketchup
         :materials => @model.materials.map do |m|
           [m.name, m.color.to_a, m.alpha, m.texture && m.texture.filename]
         end,
-        :planes => @model.entities.select { |e| e.is_a?(Sketchup::SectionPlane) }
-                          .map { |p| [p.name, p.hidden?, p.active?] },
         :selection => @model.selection.length,
         :hidden => @model.entities.map { |e| e.hidden? }
       }
@@ -819,85 +694,6 @@ module Sketchup
       signature + body
     end
   end
-
-  # Сцена: имя, флаги обновления и состояние секущих плоскостей.
-  class Page
-    attr_accessor :name, :use_section_planes, :pages
-    attr_reader :updates, :visible_planes
-
-    def initialize(name)
-      @name = name
-      @use_section_planes = false
-      @updates = []
-      @visible_planes = []
-      @valid = true
-    end
-
-    # Как в SketchUp: update запоминает текущее состояние модели —
-    # в том числе какие плоскости сечения видны.
-    def update(flags)
-      @updates << flags
-      @visible_planes = @pages ? @pages.visible_planes : []
-      true
-    end
-
-    def valid?
-      @valid
-    end
-
-    def erase!
-      @valid = false
-    end
-  end
-
-  class Pages
-    include Enumerable
-
-    def initialize(model = nil)
-      @model = model
-      @list = []
-    end
-
-    def add(name)
-      page = Sketchup::Page.new(name)
-      page.pages = self
-      @list << page
-      page
-    end
-
-    def visible_planes
-      entities = @model ? @model.entities : nil
-      return [] if entities.nil?
-      entities.select do |e|
-        e.is_a?(Sketchup::SectionPlane) && e.hidden? != true
-      end
-    end
-
-    def erase(page)
-      page.erase! if page.respond_to?(:erase!)
-      @list.delete(page)
-      true
-    end
-
-    def each(&block)
-      @list.each(&block)
-    end
-
-    def to_a
-      @list.dup
-    end
-
-    def length
-      @list.length
-    end
-
-    def [](index)
-      @list[index]
-    end
-  end
-
-  PAGE_USE_CAMERA = 4
-  PAGE_USE_SECTION_PLANES = 16
 
   class Selection
     include Enumerable
@@ -931,23 +727,6 @@ module Sketchup
 
   class Model
     attr_accessor :title, :path, :rendering_options, :shadow_info, :materials, :bounds
-
-    # Атрибуты модели — так плагин хранит нарисованные фасады в файле.
-    def get_attribute(dict, key, default = nil)
-      store = (@attributes ||= {})[dict.to_s]
-      return default if store.nil? || !store.key?(key.to_s)
-      store[key.to_s]
-    end
-
-    def set_attribute(dict, key, value)
-      (@attributes ||= {})[dict.to_s] ||= {}
-      @attributes[dict.to_s][key.to_s] = value
-      true
-    end
-
-    def attribute_dictionaries
-      (@attributes || {}).keys
-    end
 
     def initialize
       @title = 'Заречная'
@@ -1115,10 +894,6 @@ module Sketchup
       end
     end
 
-    def pages
-      @pages ||= Sketchup::Pages.new(self)
-    end
-
     def selection
       @selection
     end
@@ -1224,15 +999,8 @@ module UI
   class HtmlDialog
     STYLE_DIALOG = 1
 
-    # Колбэки доступны тестам: так проверяется, что окно действительно
-    # отдаёт данные в Ruby и что ошибки в колбэке не пропадают молча.
-    attr_reader :callbacks
-    # Скрипты, отправленные в окно: по ним видно, что Ruby обновил окно.
-    attr_reader :scripts
-
     def initialize(_options = {})
       @callbacks = {}
-      @scripts = []
     end
 
     def add_action_callback(name, &block)
@@ -1245,10 +1013,7 @@ module UI
     def close; true; end
     def visible?; false; end
     def bring_to_front; true; end
-    def execute_script(script)
-      @scripts << script.to_s
-      true
-    end
+    def execute_script(_script); true; end
   end
 
   class << self

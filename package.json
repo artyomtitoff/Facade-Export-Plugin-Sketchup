@@ -2,13 +2,13 @@
   "name": "facade-export-plugin-sketchup",
   "private": true,
   "type": "module",
-  "description": "Плагин SketchUp «Экспорт фасадов»: автотесты логики (Ruby-WASM) и окон (jsdom). Сам плагин эти файлы не использует.",
+  "description": "Плагин SketchUp «Экспорт фасадов»: автотесты логики (Ruby-WASM) и окна настроек (jsdom). Сам плагин эти файлы не использует.",
   "scripts": {
-    "test": "node test/run.mjs && node test/settings_ui.test.mjs && node test/auto_ui.test.mjs",
+    "test": "node test/run.mjs && node test/settings_ui.test.mjs",
     "test:ruby": "node test/run.mjs",
-    "test:ui": "node test/settings_ui.test.mjs && node test/auto_ui.test.mjs",
+    "test:ui": "node test/settings_ui.test.mjs",
     "icons": "python3 tools/make_icons.py",
-    "preview": "node tools/make_settings_preview.mjs && node tools/make_auto_preview.mjs",
+    "preview": "node tools/make_settings_preview.mjs",
     "build": "python3 tools/build_rbz.py"
   },
   "devDependencies": {
