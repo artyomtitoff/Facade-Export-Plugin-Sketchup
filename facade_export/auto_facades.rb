@@ -34,7 +34,8 @@ module FacadeExport
     MIN_DEPTH_TOL = 0.5
     MAX_DEPTH   = 24      # глубина обхода групп/компонентов
     PLAN_GRID   = 40      # сетка схемы сверху (40 × 40 клеток)
-    MAX_CANDIDATES = 8    # больше восьми фасадов в окне не показываем
+    MAX_FACADES  = 30     # больше 30 фасадов в одном контексте не рисуем
+    SNAP_TOL     = 10.0   # градусов: насколько линия «магнитится» к стене
     PREVIEW_SCALE = 1000.0
     PLAN_FACE_Z  = 0.7    # грань считается «вид сверху», если её нормаль вверх
     MAX_PLAN_FACES = 400  # больше граней в контур не берём
@@ -45,12 +46,13 @@ module FacadeExport
     #               для выбранных фасадов, уже после окна);
     #   extents   — габариты фасада в плоскости кадра (u/v) и глубина (d).
     Facade = Struct.new(
-      :index, :normal, :direction, :right, :records, :area, :depth, :aspect,
+      :id, :index, :normal, :direction, :right, :records, :area, :depth,
+      :orient, :ratio,
       :name, :page_name, :selected, :image_width, :image_height, :camera,
       :section_plane, :page, :extents, :segment,
-      # Фасад, нарисованный пользователем мышью на схеме: линия хранится
-      # ровно такой, какой её провели, и именно по ней ставится сечение.
-      :drawn, :line, :line_world, :cut
+      # Линия, которую пользователь провёл на схеме (мировые координаты).
+      # Именно по ней ставится камера и секущая плоскость.
+      :line_world
     )
 
     def initialize(model, settings = nil)
@@ -68,7 +70,9 @@ module FacadeExport
 
     # ------------------------------------------------------------- анализ
 
-    # Быстрый поиск фасадов. Возвращает {:facades, :plan, :scope}.
+    # Быстрый анализ контекста. Заготовленных фасадов больше нет: в окно
+    # уходят только те, что пользователь нарисовал сам (и которые уже
+    # сохранены в модели). Возвращает {:facades, :plan, :scope, :magnets}.
     def detect
       @plan_faces = []
       records = collect_faces
@@ -80,135 +84,149 @@ module FacadeExport
       end
       @records = records
       @depth_tol = depth_tolerance(records)
-      @runs = cluster_faces(records)
-      # Ноль найденных фасадов — это нормальный результат: окно покажет
-      # только схему, и фасады можно нарисовать мышью.
-      facades = @runs.empty? ? [] : build_facades(candidates(@runs))
+      @runs = records.empty? ? [] : cluster_faces(records)
       @plan = plan_map(records)
-      facades.each { |facade| facade.segment = plan_segment(facade, @plan) }
-      { :facades => facades, :plan => @plan, :scope => @scope }
+      { :facades => [], :plan => @plan, :scope => @scope, :magnets => magnet_angles }
     end
 
-    attr_reader :plan
+    attr_reader :plan, :records, :runs
 
-    # Кандидаты в фасады: отсекаем мелочь (auto.min_area) и ограничиваем
-    # список, но не по числу выбранных — «лишние» фасады тоже отдаются окну,
-    # чтобы их можно было включить одним нажатием.
-    def candidates(runs)
-      max_area = runs.map { |run| run[:area] }.max
-      min_share = @settings.auto_val('min_area').to_f / 100.0
-      limit = @settings.auto_val('max_facades').to_i
-      limit = MAX_CANDIDATES if limit <= 0
-      limit = [limit, MAX_CANDIDATES].min
-      keep = runs.select { |run| run[:area] >= max_area * min_share }
-      # Лишние стены в окно не попадают вовсе: пользователь просил
-      # «штук восемь максимум, либо вообще ноль». Всё, что нужно сверх
-      # этого, рисуется мышью по схеме.
-      keep = trim_runs(keep, limit)
-      keep.sort_by { |run| azimuth([run[:nx], run[:ny]]) }.each do |run|
-        run[:selected] = true
-        run
-      end
+    # Направления основных плоскостей модели (0..180°): по ним «магнитится»
+    # линия, которую пользователь ведёт мышью. Это направления стен.
+    def magnet_angles
+      angles = (@runs || []).map { |run| normalize_angle(azimuth([run[:nx], run[:ny]]) + 90.0) }
+      angles += [0.0, 90.0]
+      angles = angles.map { |angle| (angle * 10.0).round / 10.0 }.uniq.sort
+      angles
     end
 
-    # Отбор «не больше limit» без потери целых сторон: сначала по одному
-    # самому большому участку на каждое направление, потом — по кругу
-    # следующие. Иначе два куска одной стены вытесняли бы целый фасад
-    # с другой стороны.
-    def trim_runs(runs, limit)
-      groups = {}
-      runs.each do |run|
-        key = [run[:nx].round(2), run[:ny].round(2)]
-        (groups[key] ||= []) << run
+    def normalize_angle(deg)
+      value = deg.to_f % 180.0
+      value += 180.0 if value.negative?
+      value
+    end
+
+    # Притянуть линию к ближайшей основной плоскости: угол округляется до
+    # магнита, середина и длина линии сохраняются. Если рядом нет ничего
+    # подходящего — линия остаётся как провели.
+    def snap_line(x1, y1, x2, y2, tolerance = SNAP_TOL)
+      x1 = x1.to_f
+      y1 = y1.to_f
+      x2 = x2.to_f
+      y2 = y2.to_f
+      dx = x2 - x1
+      dy = y2 - y1
+      length = Math.sqrt(dx * dx + dy * dy)
+      return [x1, y1, x2, y2] if length < 1.0e-6
+      angle = normalize_angle(Math.atan2(dy, dx) * 180.0 / Math::PI)
+      best = nil
+      magnet_angles.each do |candidate|
+        diff = (angle - candidate).abs
+        diff = 180.0 - diff if diff > 90.0
+        best = [candidate, diff] if best.nil? || diff < best[1]
       end
-      groups.each_value { |list| list.sort_by! { |run| -run[:area] } }
-      ordered = groups.keys.sort_by { |(nx, ny)| azimuth([nx, ny]) }
-      picked = []
-      round = 0
-      while picked.length < limit
-        added = false
-        ordered.each do |key|
-          list = groups[key]
-          next if round >= list.length
-          picked << list[round]
-          added = true
-          break if picked.length >= limit
+      return [x1, y1, x2, y2] if best.nil? || best[1] > tolerance
+      radians = best[0] * Math::PI / 180.0
+      ux = Math.cos(radians)
+      uy = Math.sin(radians)
+      mx = (x1 + x2) / 2.0
+      my = (y1 + y2) / 2.0
+      [mx - ux * length / 2.0, my - uy * length / 2.0,
+       mx + ux * length / 2.0, my + uy * length / 2.0]
+    end
+
+    # Фасад по нарисованной линии. Линия НЕ ищет «ближайшую стену» и не
+    # укорачивается: как провели — по ней и режется, и снимается фасад.
+    def facade_from_line(x1, y1, x2, y2, invert = false, orient = nil, ratio = nil)
+      line = snap_line(x1, y1, x2, y2)
+      build_drawn_facade(line[0], line[1], line[2], line[3], invert, orient, ratio)
+    end
+
+    # Нормаль фасада: перпендикуляр к нарисованной линии, направленный
+    # ОТ здания (наружу). Сторону подсказывает ближайшая стена, параллельная
+    # линии: её нормаль уже смотрит наружу. Если параллельных стен рядом
+    # нет — по массе геометрии: наружу туда, где здания меньше.
+    # Пользователь всегда может развернуть фасад стрелкой.
+    def outward_normal(mx, my, ux, uy)
+      px = -uy
+      py = ux
+      best = nil
+      (@records || []).each do |record|
+        box = record[:plan]
+        next if box.nil?
+        normal = record[:normal]
+        next if normal.nil? || normal[0].nil? || normal[1].nil?
+        next if (normal[0] * ux + normal[1] * uy).abs > COS_TOL
+        cx = (box[0] + box[2]) / 2.0
+        cy = (box[1] + box[3]) / 2.0
+        distance = ((cx - mx) * px + (cy - my) * py).abs
+        best = [normal[0], normal[1], distance] if best.nil? || distance < best[2]
+      end
+      unless best.nil?
+        sign = best[0] * px + best[1] * py
+        return sign >= 0.0 ? [px, py] : [-px, -py]
+      end
+
+      first = 0.0
+      second = 0.0
+      (@records || []).each do |record|
+        box = record[:plan]
+        next if box.nil?
+        cx = (box[0] + box[2]) / 2.0
+        cy = (box[1] + box[3]) / 2.0
+        if (cx - mx) * px + (cy - my) * py >= 0.0
+          first += record[:area].to_f
+        else
+          second += record[:area].to_f
         end
-        break unless added
-        round += 1
       end
-      picked
+      first > second ? [-px, -py] : [px, py]
     end
 
-    # Фасад по нарисованной пользователем линии на схеме.
-    # Линия НЕ подгоняется под найденную стену и не укорачивается: как
-    # провели — по этой линии и режется/снимается фасад. Направление взгляда
-    # по умолчанию — наружу от здания (от центра схемы); если нужно наоборот,
-    # пользователь разворачивает фасад кнопкой «⇄».
-    def facade_from_line(x1, y1, x2, y2, invert = false)
+    def plan_span
+      @plan && @plan[:span] ? @plan[:span] : 1.0
+    end
+
+    def build_drawn_facade(x1, y1, x2, y2, invert = false, orient = nil, ratio = nil)
       dx = x2.to_f - x1.to_f
       dy = y2.to_f - y1.to_f
       length = Math.sqrt(dx * dx + dy * dy)
       return nil if length < 1.0e-6
+      ux = dx / length
+      uy = dy / length
       mx = (x1.to_f + x2.to_f) / 2.0
       my = (y1.to_f + y2.to_f) / 2.0
-      normal = drawn_normal(mx, my, -dy / length, dx / length)
-      normal = [-normal[0], -normal[1]] if invert
-      build_drawn_facade(x1.to_f, y1.to_f, x2.to_f, y2.to_f, normal)
-    end
-
-    # Направление взгляда для нарисованной линии: наружу от центра здания.
-    def drawn_normal(mx, my, ux, uy)
-      min_x = @plan && @plan[:min_x] ? @plan[:min_x] : 0.0
-      min_y = @plan && @plan[:min_y] ? @plan[:min_y] : 0.0
-      span = @plan && @plan[:span] ? @plan[:span] : 1.0
-      cx = min_x + span / 2.0
-      cy = min_y + span / 2.0
-      dot = (mx - cx) * ux + (my - cy) * uy
-      dot >= 0.0 ? [ux, uy] : [-ux, -uy]
-    end
-
-    def build_drawn_facade(x1, y1, x2, y2, normal)
-      right = [-normal[1], normal[0]]
-      u1 = x1 * right[0] + y1 * right[1]
-      u2 = x2 * right[0] + y2 * right[1]
+      nx, ny = outward_normal(mx, my, ux, uy)
+      nx, ny = -nx, -ny if invert
+      right = [-ny, nx]
+      u1 = x1.to_f * right[0] + y1.to_f * right[1]
+      u2 = x2.to_f * right[0] + y2.to_f * right[1]
       u_min, u_max = [u1, u2].min, [u1, u2].max
-      depth = x1 * normal[0] + y1 * normal[1]
-      cut = line_crosses_building?(x1, y1, x2, y2)
+      depth = mx * nx + my * ny
       facade = Facade.new
-      facade.drawn = true
-      facade.normal = Geom::Vector3d.new(normal[0], normal[1], 0.0)
-      facade.direction = Geom::Vector3d.new(-normal[0], -normal[1], 0.0)
+      facade.normal = Geom::Vector3d.new(nx, ny, 0.0)
+      facade.direction = Geom::Vector3d.new(-nx, -ny, 0.0)
       facade.right = Geom::Vector3d.new(right[0], right[1], 0.0)
       facade.depth = depth
-      facade.cut = cut
-      facade.line_world = [x1, y1, x2, y2]
-      facade.records = drawn_records(normal, depth, right, u_min, u_max, cut)
+      facade.line_world = [x1.to_f, y1.to_f, x2.to_f, y2.to_f]
+      facade.records = drawn_records(right, u_min, u_max)
       facade.extents = drawn_extents(facade, u_min, u_max)
       height = (facade.extents[:v_max] - facade.extents[:v_min]).abs
-      facade.area = (u_max - u_min).abs * height
+      facade.area = (u_max - u_min).abs * [height, 0.0].max
+      facade.orient = Config.auto_orient(orient || @settings.auto_val('orient'))
+      facade.ratio = Config.auto_ratio_name(ratio || @settings.auto_val('ratio'))
       facade.selected = true
-      facade.aspect = @settings.auto_val('aspect').to_s
-      facade.segment = drawn_segment(x1, y1, x2, y2, normal)
+      facade.segment = drawn_segment(x1.to_f, y1.to_f, x2.to_f, y2.to_f, nx, ny)
       facade
     end
 
-    # Грани, которые вообще видны с выбранной стороны: смотрят на камеру
-    # и (если линия режет здание) лежат за секущей плоскостью.
-    def drawn_records(normal, depth, right, u_min, u_max, cut)
+    # Грани рядом с линией (по её длине) — из них берётся высота фасада.
+    def drawn_records(right, u_min, u_max)
       margin = (u_max - u_min).abs * 0.02 + 1.0
       chosen = (@records || []).select do |record|
-        dot = record[:normal][0] * normal[0] + record[:normal][1] * normal[1]
-        next false if dot < COS_TOL
-        next false unless record_overlaps_u?(record, right, u_min - margin, u_max + margin)
-        if cut
-          box = record[:plan]
-          center_depth = (box[0] + box[2]) / 2.0 * normal[0] + (box[1] + box[3]) / 2.0 * normal[1]
-          next false if center_depth > depth
-        end
-        true
+        record_overlaps_u?(record, right, u_min - margin, u_max + margin)
       end
-      chosen
+      chosen.empty? ? (@records || []) : chosen
     end
 
     def record_overlaps_u?(record, right, from, to)
@@ -219,34 +237,38 @@ module FacadeExport
       range[1] >= from && range[0] <= to
     end
 
-    # Габариты нарисованного фасада: ширина — ровно по линии, высота —
-    # по видимым граням (а если их нет — по всему зданию).
-    def drawn_extents(facade, u_min, u_max)
+    # Габариты нарисованного фасада: ширина — ровно по линии, высота — по
+    # геометрии рядом, глубина — по самой линии (по ней и режем).
+    def drawn_extents(facade, u_min = nil, u_max = nil)
+      if u_min.nil? || u_max.nil?
+        line = facade.line_world
+        return facade.extents if line.nil?
+        right = facade.right
+        u1 = line[0] * right.x + line[1] * right.y
+        u2 = line[2] * right.x + line[3] * right.y
+        u_min, u_max = [u1, u2].min, [u1, u2].max
+      end
       source = facade.records.nil? || facade.records.empty? ? (@records || []) : facade.records
-      v_min = v_max = d_min = d_max = nil
+      v_min = v_max = nil
       source.each do |record|
         transform = record[:transform]
         record[:face].vertices.each do |vertex|
           point = vertex.position
           point = point.transform(transform) unless transform.nil?
-          d = point.x * facade.normal.x + point.y * facade.normal.y
           v = point.z
           v_min = v if v_min.nil? || v < v_min
           v_max = v if v_max.nil? || v > v_max
-          d_min = d if d_min.nil? || d < d_min
-          d_max = d if d_max.nil? || d > d_max
         end
       end
       v_min = 0.0 if v_min.nil?
       v_max = 1.0 if v_max.nil? || v_max <= v_min
-      d_min = facade.depth if d_min.nil?
-      d_max = facade.depth if d_max.nil?
+      depth = facade.depth.to_f
       { :u_min => u_min, :u_max => u_max, :v_min => v_min, :v_max => v_max,
-        :d_min => d_min, :d_max => d_max }
+        :d_min => depth, :d_max => depth }
     end
 
     # Отрезок на схеме — ровно та линия, которую провёл пользователь.
-    def drawn_segment(x1, y1, x2, y2, normal)
+    def drawn_segment(x1, y1, x2, y2, nx, ny)
       min_x = @plan[:min_x]
       min_y = @plan[:min_y]
       span = @plan[:span]
@@ -257,66 +279,94 @@ module FacadeExport
       {
         'from'   => to_plan.call(x1, y1),
         'to'     => to_plan.call(x2, y2),
-        'normal' => [normal[0].round(4), -normal[1].round(4)],
+        'normal' => [nx.round(4), (-ny).round(4)],
         'area'   => 0.0
       }
     end
 
-    # Пересекает ли линия контур здания: только тогда нужна секущая
-    # плоскость. Линия мимо здания — обычный фасад без сечения.
-    def line_crosses_building?(x1, y1, x2, y2)
-      steps = 24
-      (0..steps).each do |i|
-        t = i.to_f / steps
-        return true if plan_contains?(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t)
-      end
-      false
-    end
-
-    def plan_contains?(x, y)
-      polygons = @plan && @plan[:polygons_world] ? @plan[:polygons_world] : []
-      return true if polygons.any? { |polygon| point_in_polygon?(x, y, polygon) }
-      cells = @plan && @plan['cells'] ? @plan['cells'] : []
-      return false if cells.empty?
-      span = @plan[:span]
-      step = span / PLAN_GRID
-      ix = ((x - @plan[:min_x]) / step).floor
-      iy = PLAN_GRID - 1 - ((y - @plan[:min_y]) / step).floor
-      cells.include?([ix, iy])
-    end
-
-    # Развернуть фасад в другую сторону, оставив его на том же месте.
+    # Развернуть фасад в другую сторону, оставив ту же линию и то же место.
     def invert(facade)
       return nil if facade.nil?
-      if facade.drawn && facade.line_world
-        fresh = facade_from_line(*facade.line_world, true)
+      line = facade.line_world
+      return nil if line.nil?
+      fresh = build_drawn_facade(line[0], line[1], line[2], line[3], true,
+                                 facade.orient, facade.ratio)
+      return nil if fresh.nil?
+      fresh.id = facade.id
+      fresh.index = facade.index
+      fresh.name = facade.name
+      fresh.page_name = renamed_page(facade.page_name, fresh.normal)
+      fresh.selected = facade.selected
+      fresh
+    end
+
+    # Сдвинуть фасад: линия переносится, направление и пропорции остаются.
+    def move(facade, x1, y1, x2, y2)
+      return nil if facade.nil?
+      # Перенос — только сдвиг: сторону и пропорции сохраняем как были.
+      fresh = build_drawn_facade(x1, y1, x2, y2, false, facade.orient, facade.ratio)
+      return nil if fresh.nil?
+      if (fresh.normal.x - facade.normal.x).abs + (fresh.normal.y - facade.normal.y).abs > 0.5
+        fresh = build_drawn_facade(x1, y1, x2, y2, true, facade.orient, facade.ratio)
         return nil if fresh.nil?
-        fresh.index = facade.index
-        fresh.name = facade.name
-        fresh.page_name = renamed_page(facade.page_name, fresh.normal)
-        fresh.aspect = facade.aspect
-        fresh.selected = facade.selected
-        return fresh
       end
-      normal = facade.normal
-      facade.normal = Geom::Vector3d.new(-normal.x, -normal.y, 0.0)
-      facade.direction = Geom::Vector3d.new(normal.x, normal.y, 0.0)
-      facade.right = Geom::Vector3d.new(normal.y, -normal.x, 0.0)
-      facade.depth = -facade.depth
-      facade.extents = nil
-      facade.camera = nil
-      facade.section_plane = nil
-      if facade.segment
-        sign = facade.segment['normal']
-        facade.segment = facade.segment.merge('normal' => [-sign[0], -sign[1]])
+      fresh.id = facade.id
+      fresh.index = facade.index
+      fresh.name = facade.name
+      fresh.page_name = facade.page_name
+      fresh.selected = facade.selected
+      fresh
+    end
+
+    # Восстановить сохранённые в модели фасады этого контекста.
+    def restore(definitions)
+      list = []
+      Array(definitions).each do |item|
+        next unless item.is_a?(Hash)
+        line = %w[x1 y1 x2 y2].map { |key| item[key].to_f }
+        length = Math.sqrt((line[2] - line[0])**2 + (line[3] - line[1])**2)
+        next if length < 1.0e-6
+        facade = build_drawn_facade(line[0], line[1], line[2], line[3], false,
+                                    item['orient'], item['ratio'])
+        next if facade.nil?
+        # Сторону берём из файла: если авто-выбор дал другую, разворачиваем.
+        if item['nx'] && item['ny']
+          dot = facade.normal.x * item['nx'].to_f + facade.normal.y * item['ny'].to_f
+          if dot < 0.0
+            facade = build_drawn_facade(line[0], line[1], line[2], line[3], true,
+                                        item['orient'], item['ratio'])
+            next if facade.nil?
+          end
+        end
+        facade.id = item['id'].to_i
+        name = item['name'].to_s.strip
+        facade.name = name unless name.empty?
+        list << facade
       end
-      facade.page_name = renamed_page(facade.page_name, facade.normal)
-      facade
+      renumber!(list)
+      list
+    end
+
+    # Нумерация по факту: 1..N в том порядке, в каком фасады лежат в списке.
+    # Удалили восемь, нарисовали новый — он первый, а не девятый.
+    def renumber!(facades)
+      prefix = @settings.auto_val('scene_prefix').to_s.strip
+      prefix = 'Фасад' if prefix.empty?
+      pattern = /\A#{Regexp.escape(prefix)} \d+\z/
+      Array(facades).each_with_index do |facade, position|
+        facade.index = position + 1
+        name = facade.name.to_s.strip
+        if name.empty? || name =~ pattern
+          facade.name = "#{prefix} #{facade.index}"
+        end
+        facade.page_name = renamed_page(facade.name, facade.normal)
+      end
+      facades
     end
 
     # Имя сцены после разворота: «Фасад 3 — юг» → «Фасад 3 — север».
-    def renamed_page(page_name, normal)
-      text = page_name.to_s
+    def renamed_page(name, normal)
+      text = name.to_s
       head = text.include?('—') ? text.split('—').first.to_s.rstrip : text
       "#{head} — #{compass(normal)}"
     end
@@ -607,28 +657,6 @@ module FacadeExport
 
     # -------------------------------------------------------------- фасады
 
-    def build_facades(groups)
-      prefix = @settings.auto_val('scene_prefix').to_s.strip
-      prefix = 'Фасад' if prefix.empty?
-      aspect = @settings.auto_val('aspect').to_s
-
-      groups.each_with_index.map do |group, index|
-        facade = Facade.new
-        facade.index = index + 1
-        facade.normal = Geom::Vector3d.new(group[:nx], group[:ny], 0.0)
-        facade.direction = Geom::Vector3d.new(-group[:nx], -group[:ny], 0.0)
-        facade.right = Geom::Vector3d.new(-group[:ny], group[:nx], 0.0)
-        facade.records = group[:records]
-        facade.area = group[:area]
-        facade.depth = group[:depth]
-        facade.aspect = aspect
-        facade.selected = group[:selected] != false
-        facade.name = "#{prefix} #{facade.index}"
-        facade.page_name = "#{prefix} #{facade.index} — #{compass(facade.normal)}"
-        facade
-      end
-    end
-
     # Название стороны света по нормали: восемь румбов (+Y — север).
     # Нужно для имён сцен: у здания под 45° фасад не «восток», а «северо-восток».
     def compass(normal)
@@ -781,101 +809,41 @@ module FacadeExport
       inside
     end
 
-    # Линия фасада на схеме: отрезок вдоль стены + нормаль наружу.
-    # Координаты — в тех же 0..1000, что и клетки.
-    def plan_segment(facade, plan)
-      return facade.segment if facade.respond_to?(:drawn) && facade.drawn && facade.segment
-      min_x = plan[:min_x]
-      min_y = plan[:min_y]
-      span = plan[:span]
-      u_min = nil
-      u_max = nil
-      facade.records.each do |record|
-        box = record[:plan]
-        next if box.nil?
-        [[box[0], box[1]], [box[2], box[1]], [box[0], box[3]], [box[2], box[3]]].each do |(x, y)|
-          u = x * facade.right.x + y * facade.right.y
-          u_min = u if u_min.nil? || u < u_min
-          u_max = u if u_max.nil? || u > u_max
-        end
-      end
-      return nil if u_min.nil?
-      normal = facade.normal
-      depth = facade.depth
-      point = lambda do |u|
-        x = facade.right.x * u + normal.x * depth
-        y = facade.right.y * u + normal.y * depth
-        [
-          ((x - min_x) / span * PREVIEW_SCALE).round(1),
-          (PREVIEW_SCALE - (y - min_y) / span * PREVIEW_SCALE).round(1)
-        ]
-      end
-      {
-        'from'   => point.call(u_min),
-        'to'     => point.call(u_max),
-        'normal' => [normal.x.round(4), -normal.y.round(4)],
-        'area'   => facade.area.round(1)
-      }
-    end
-
     # ---------------------------------------------------------------- кадры
 
     # Габариты фасада в плоскости кадра: только для выбранных фасадов,
     # уже после окна. Здесь единственный раз читаются вершины граней.
+    # Габариты фасада в плоскости кадра (u/v) и глубина (d).
     def extents(facade)
       return facade.extents unless facade.extents.nil?
-      u_min = u_max = v_min = v_max = d_min = d_max = nil
-      facade.records.each do |record|
-        transform = record[:transform]
-        record[:face].vertices.each do |vertex|
-          point = vertex.position
-          point = point.transform(transform) unless transform.nil?
-          u = point.x * facade.right.x + point.y * facade.right.y
-          d = -(point.x * facade.direction.x + point.y * facade.direction.y)
-          v = point.z
-          u_min = u if u_min.nil? || u < u_min
-          u_max = u if u_max.nil? || u > u_max
-          v_min = v if v_min.nil? || v < v_min
-          v_max = v if v_max.nil? || v > v_max
-          d_max = d if d_max.nil? || d > d_max
-          d_min = d if d_min.nil? || d < d_min
-        end
-      end
-      facade.extents = {
-        :u_min => u_min, :u_max => u_max, :v_min => v_min, :v_max => v_max,
-        :d_min => d_min, :d_max => d_max
-      }
+      drawn_extents(facade)
     end
 
-    # Камеры всех выбранных фасадов: общий масштаб (по самому большому),
-    # фасад по центру по горизонтали и прижат к низу кадра.
+    # Камеры всех фасадов: общий масштаб (по самому крупному), фасад
+    # по центру по горизонтали и прижат к низу кадра.
     def build_cameras!(facades)
       return facades if facades.nil? || facades.empty?
-      plans = facades.map { |facade| per_facade_plan(facade) }.compact
+      plans = facades.map { |facade| facade_plan(facade) }.compact
       return facades if plans.empty?
       scale = plans.map { |plan| plan[:scale] }.min
       plans.each { |plan| plan[:facade].camera = camera_for(plan, scale) }
       facades
     end
 
-    def per_facade_plan(facade)
+    def facade_plan(facade)
       extents = extents(facade)
-      return nil if extents[:u_min].nil?
+      return nil if extents.nil? || extents[:u_min].nil?
+      facade_width = [(extents[:u_max] - extents[:u_min]).abs, 1.0e-6].max
+      facade_height = [(extents[:v_max] - extents[:v_min]).abs, 1.0e-6].max
       width, height = self.class.image_size(
-        facade.aspect, @settings.export,
-        (extents[:u_max] - extents[:u_min]).abs, (extents[:v_max] - extents[:v_min]).abs
+        facade.orient, facade.ratio, @settings.export, facade_width, facade_height
       )
       facade.image_width = width
       facade.image_height = height
       gap = Framing.gap_pixels(@settings.export, width, height)
       avail_w = [width - 2.0 * gap, 1.0].max
       avail_h = [height - 2.0 * gap, 1.0].max
-      facade_width = [(extents[:u_max] - extents[:u_min]).abs, 1.0e-6].max
-      facade_height = [(extents[:v_max] - extents[:v_min]).abs, 1.0e-6].max
-      scale = [
-        avail_w / facade_width,
-        avail_h / facade_height
-      ].min
+      scale = [avail_w / facade_width, avail_h / facade_height].min
       scale = 1.0 if scale.nil? || scale <= 0.0 || scale.nan?
       {
         :facade => facade,
@@ -888,33 +856,32 @@ module FacadeExport
     end
 
     # Размер кадра в пикселях: длинная сторона — export.width (9999),
-    # вторая — по соотношению. Соотношение «авто» (по умолчанию) берётся
-    # по пропорциям самого фасада: широкий фасад — горизонтальный кадр,
-    # высокий — вертикальный. Раньше все фасады выходили вертикальными.
-    def self.image_size(aspect, export_settings, facade_width = nil, facade_height = nil)
+    # вторая — по пропорциям. Ориентация («горизонтальное», «вертикальное»,
+    # «квадрат») выбирается отдельно от пропорций (3:4, 16:9, 3:1 …).
+    def self.image_size(orient, ratio, export_settings, facade_width = nil, facade_height = nil)
       longest = export_settings['width'].to_i
       longest = Config::MIN_IMAGE_SIDE if longest < Config::MIN_IMAGE_SIDE
       longest = Config::MAX_IMAGE_SIDE if longest > Config::MAX_IMAGE_SIDE
       if export_settings['height'].to_i.positive?
         return [longest, export_settings['height'].to_i]
       end
-      aw, ah = facade_ratio(aspect, facade_width, facade_height)
-      if aw >= ah
-        [longest, [(longest * ah.to_f / aw.to_f).round, Config::MIN_IMAGE_SIDE].max]
-      else
-        [[(longest * aw.to_f / ah.to_f).round, Config::MIN_IMAGE_SIDE].max, longest]
+      pair = Config.auto_ratio(ratio)
+      if pair.nil?
+        # «авто» — кадр по пропорциям самой геометрии фасада.
+        w = facade_width.to_f
+        h = facade_height.to_f
+        pair = (w.positive? && h.positive?) ? [w, h] : [4.0, 3.0]
       end
-    end
-
-    # Соотношение сторон кадра: явное из списка или «авто» по фасаду.
-    def self.facade_ratio(aspect, facade_width = nil, facade_height = nil)
-      key = aspect.to_s
-      ratio = Config::AUTO_ASPECTS[key]
-      return ratio if ratio
-      w = facade_width.to_f
-      h = facade_height.to_f
-      return [3, 4] if w <= 0.0 || h <= 0.0
-      w >= h ? [4, 3] : [3, 4]
+      long = [pair[0].to_f, pair[1].to_f].max
+      short = [pair[0].to_f, pair[1].to_f].min
+      long = 1.0 if long <= 0.0
+      side = [[(longest * short / long).round, Config::MIN_IMAGE_SIDE].max, longest].min
+      key = Config.auto_orient(orient)
+      case key
+      when 'v'  then [side, longest]
+      when 'sq' then [longest, longest]
+      else [longest, side]
+      end
     end
 
     def camera_for(plan, scale)
@@ -969,50 +936,25 @@ module FacadeExport
     # --------------------------------------------------- плоскости и сцены
 
     # Точка и нормаль секущей плоскости в координатах контекста.
-    # Плоскость параллельна фасаду и стоит чуть ГЛУБЖЕ стены; нормаль смотрит
-    # в здание, поэтому отрезается всё за стеной (интерьер, внутренние стены,
-    # крылья за двором), а фасад и его внешние детали (балконы, козырьки,
-    # откосы) остаются целыми. Секущая плоскость скрывает ту сторону, куда
-    # смотрит её нормаль.
+    # Плоскость стоит РОВНО на нарисованной линии (чуть со стороны камеры,
+    # чтобы грань стены не оказалась в самой плоскости и не исчезла) и
+    # отсекает всё, что находится ДО линии, то есть между камерой и стеной.
+    # В кадр попадает стена и всё, что за ней.
     def section_plane_data(facade)
-      # Нарисованный фасад: сечение — ровно по линии, и только если линия
-      # заходит в здание. Мимо здания — никакого сечения не нужно.
-      return drawn_plane_data(facade) if facade.respond_to?(:drawn) && facade.drawn
-      extents = extents(facade)
-      u_center = (extents[:u_min] + extents[:u_max]) / 2.0
-      v_center = (extents[:v_min] + extents[:v_max]) / 2.0
-      span = [(extents[:u_max] - extents[:u_min]).abs, (extents[:v_max] - extents[:v_min]).abs, 1.0].max
-      epsilon = span * 0.001
-      # Секущая плоскость скрывает ту сторону, куда смотрит её нормаль.
-      # Нормаль смотрит В здание, плоскость стоит вплотную к внутренней
-      # поверхности стены: сам фасад, балконы и козырьки остаются, интерьер
-      # и соседние крылья за стеной отрезаются.
-      d = extents[:d_min] - epsilon
+      ext = facade.extents || drawn_extents(facade)
+      span = [(ext[:u_max] - ext[:u_min]).abs, (ext[:v_max] - ext[:v_min]).abs, 1.0].max
+      epsilon = [span * 0.002, 0.1].max
+      u_center = (ext[:u_min] + ext[:u_max]) / 2.0
+      v_center = (ext[:v_min] + ext[:v_max]) / 2.0
       normal = facade.normal
+      depth = facade.depth.to_f + epsilon
       point = Geom::Point3d.new(
-        facade.right.x * u_center + normal.x * d,
-        facade.right.y * u_center + normal.y * d,
+        facade.right.x * u_center + normal.x * depth,
+        facade.right.y * u_center + normal.y * depth,
         v_center
       )
-      plane_normal = Geom::Vector3d.new(-normal.x, -normal.y, 0.0)
+      plane_normal = Geom::Vector3d.new(normal.x, normal.y, 0.0)
       to_context(point, plane_normal)
-    end
-
-    # Плоскость по нарисованной линии: точка на линии, нормаль — на камеру,
-    # поэтому отрезается всё между камерой и линией, а срез виден как фасад.
-    def drawn_plane_data(facade)
-      return nil unless facade.cut
-      extents = extents(facade)
-      return nil if extents.nil? || extents[:u_min].nil?
-      u_center = (extents[:u_min] + extents[:u_max]) / 2.0
-      v_center = (extents[:v_min] + extents[:v_max]) / 2.0
-      point = Geom::Point3d.new(
-        facade.right.x * u_center + facade.normal.x * facade.depth,
-        facade.right.y * u_center + facade.normal.y * facade.depth,
-        v_center
-      )
-      vector = Geom::Vector3d.new(facade.normal.x, facade.normal.y, 0.0)
-      to_context(point, vector)
     end
 
     # Точка и вектор в координатах того контекста, где лежит плоскость.
@@ -1046,7 +988,6 @@ module FacadeExport
         snapshot_planes
         facades.each do |facade|
           point, normal = section_plane_data(facade)
-          # Нарисованный фасад мимо здания: сечения нет, кадр без подрезки.
           next if point.nil? || normal.nil?
           plane = begin
             entities.add_section_plane(point, normal)
@@ -1073,16 +1014,31 @@ module FacadeExport
         next if plane.nil? || !plane_alive?(plane)
         hide_plane(plane, plane != facade.section_plane)
       end
-      if facade.section_plane
-        hide_plane(facade.section_plane, false)
+      if facade.section_plane && plane_alive?(facade.section_plane)
+        plane = facade.section_plane
+        hide_plane(plane, false)
+        # Разрез должен работать ТОЛЬКО на своём фасаде: в каждом контексте
+        # активной делаем ровно эту плоскость.
         begin
-          facade.section_plane.activate
+          entities = begin
+            plane.parent
+          rescue StandardError
+            nil
+          end
+          if entities.respond_to?(:active_section_plane=)
+            entities.active_section_plane = plane
+          else
+            plane.activate
+          end
         rescue StandardError => e
           FacadeExport.log("Плоскость не активирована: #{e.message}")
+          begin
+            plane.activate
+          rescue StandardError
+            nil
+          end
         end
       else
-        # У этого фасада сечения нет — значит, не должен резать ни один
-        # из наших разрезов (скрытая плоскость продолжает резать).
         clear_active_planes
       end
       view = active_view

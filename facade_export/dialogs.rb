@@ -147,6 +147,27 @@ module FacadeExport
         push_settings(dialog, Settings.new)
       end
 
+      # Пользователь передвинул нарисованную линию: фасад остаётся тем же,
+      # меняется только место на схеме (поворачивать линии нельзя).
+      dialog.add_action_callback('move_facade') do |_context, data|
+        begin
+          AutoExport.move_facade(data)
+        rescue StandardError => e
+          FacadeExport.log("Авто-фасады: линия не передвинута (#{e.message})")
+          UI.messagebox("Не удалось передвинуть фасад: #{e.message}")
+        end
+      end
+
+      # Пользователь убрал фасад из окна.
+      dialog.add_action_callback('delete_facade') do |_context, data|
+        begin
+          AutoExport.remove_facade(data)
+        rescue StandardError => e
+          FacadeExport.log("Авто-фасады: фасад не удалён (#{e.message})")
+          UI.messagebox("Не удалось удалить фасад: #{e.message}")
+        end
+      end
+
       dialog.add_action_callback('cancel') do |_context, _data|
         dialog.close
       end
@@ -251,13 +272,24 @@ module FacadeExport
       FacadeExport.log("Не удалось передать фасад в окно: #{e.message}")
     end
 
-    # Точечное обновление окна: фасад развернули (та же строка).
+    # Точечное обновление окна: фасад развернули или передвинули.
+    # После удаления окно получает полный набор данных — нумерацию
+    # ведёт Ruby, поэтому номера всегда 1..N без пропусков.
     def push_auto_update(payload)
       return unless @auto_dialog
       json = JSON.generate(payload)
       @auto_dialog.execute_script("FacadeExportAuto.updateFacade(#{JSON.generate(json)});")
     rescue StandardError => e
       FacadeExport.log("Не удалось обновить фасад в окне: #{e.message}")
+    end
+
+    # Полная перезаливка списка (после удаления фасада и перенумерации).
+    def push_auto_data_public
+      return unless @auto_dialog
+      payload = AutoExport.refresh_payload
+      push_auto_data(@auto_dialog, payload) if payload
+    rescue StandardError => e
+      FacadeExport.log("Не удалось перерисовать окно: #{e.message}")
     end
 
     def push_auto_data(dialog, payload)
