@@ -56,10 +56,17 @@ module FacadeExport
     Job = Struct.new(:map, :glass_mode, :title)
 
     # Имя файла: Имя_Фасад_Номер_Карта.png
-    def self.file_name(base_name, number, map_title)
+    # В автоматическом выводе вместо «Фасад_Номер» — имя фасада от
+    # пользователя: Имя_Север_Карта.png.
+    def self.file_name(base_name, number, map_title, label = nil)
       base = Util.sanitize_filename(base_name, 'Модель')
       title = Util.sanitize_filename(map_title, 'Карта')
-      "#{base}_Фасад_#{number}_#{title}.png"
+      custom = Util.sanitize_filename(label.to_s, '').strip
+      if custom.nil? || custom.empty?
+        "#{base}_Фасад_#{number}_#{title}.png"
+      else
+        "#{base}_#{custom}_#{title}.png"
+      end
     end
 
     # Список задач экспорта.
@@ -86,12 +93,13 @@ module FacadeExport
     end
 
     # Полный список файлов, которые появятся после экспорта.
-    def self.planned_paths(settings, directory, base_name, facade_count)
+    def self.planned_paths(settings, directory, base_name, facade_count, labels = nil)
       jobs = output_jobs(settings)
       paths = []
       (1..facade_count).each do |number|
+        label = labels ? labels[number - 1] : nil
         jobs.each do |job|
-          paths << File.join(directory, file_name(base_name, number, job.title))
+          paths << File.join(directory, file_name(base_name, number, job.title, label))
         end
       end
       paths
@@ -103,7 +111,10 @@ module FacadeExport
       @settings     = options[:settings] || FacadeExport.settings
       @directory    = options[:directory]
       @base_name    = options[:base_name]
-      @facade_count = (options[:facade_count] || 4).to_i
+      @facades      = options[:facades]
+      @labels       = options[:labels]
+      @auto         = options[:auto]
+      @facade_count = (options[:facade_count] || (@facades ? @facades.length : 4)).to_i
       @first_number = (options[:first_number] || 1).to_i
       @on_progress  = options[:on_progress]
       @result = Result.new([], [], [], 0.0, Time.now, [], 0, @directory, 0, 0, :model)
@@ -142,7 +153,9 @@ module FacadeExport
         # в параллельную проекцию, и только потом считаем кадры и снимаем
         # фасады. Иначе зум/высота кадра считались бы по перспективе и
         # картинки разъезжались бы между фасадами.
-        switch_to_parallel_view if parallel
+        # Камеры автоматических фасадов уже параллельные и посчитаны
+        # по самим фасадам — текущий вид пользователя не трогаем.
+        switch_to_parallel_view if parallel && @facades.nil?
         directions, cameras, plan, scope = build_cameras(parallel, visible)
 
         @result.scope = scope
@@ -167,11 +180,18 @@ module FacadeExport
               number = @first_number + facade_index
               done += 1
               report_progress(done, total, number, job)
-              @view.camera = cameras[facade_index]
+              direction = directions[facade_index]
+              facade = @facades && @facades[facade_index]
+              if facade
+                apply_auto_facade(facade)
+                direction = facade.direction
+              else
+                @view.camera = cameras[facade_index]
+              end
               # Помечаем вид как «требуется перерисовка», чтобы write_image
               # считал кадр уже с новой камерой.
               invalidate_view
-              apply_shadows(job.map, directions[facade_index], shadow)
+              apply_shadows(job.map, direction, shadow)
               write_job(job, number)
             end
           rescue StandardError => e
@@ -245,6 +265,7 @@ module FacadeExport
     #   * обычный режим — кадр по габаритам объекта (Framing.plan);
     #   * «только видимый участок» — кадр как на экране (Framing.visible_cameras).
     def build_cameras(parallel, visible)
+      return build_auto_plan if @facades && !@facades.empty?
       if visible
         directions = Framing.facade_directions(@view.camera, @facade_count)
         plan, cameras = Framing.visible_cameras(
@@ -275,6 +296,42 @@ module FacadeExport
       [directions.first(@facade_count), cameras.first(@facade_count), plan, scope]
     end
 
+    # План автоматических фасадов: камеры и размеры кадров посчитаны
+    # в AutoFacades (по самим фасадам, а не по габаритам модели).
+    def build_auto_plan
+      facades = @facades
+      widths = facades.map { |f| f.image_width.to_i }.reject { |w| w <= 0 }
+      heights = facades.map { |f| f.image_height.to_i }.reject { |h| h <= 0 }
+      plan = {
+        :image_width => widths.max || Config::MIN_IMAGE_SIDE,
+        :image_height => heights.max || Config::MIN_IMAGE_SIDE,
+        :projections => [],
+        :gap => 0,
+        :scale => 1.0,
+        :visible => false,
+        :auto => true
+      }
+      [facades.map { |f| f.direction }, facades.map { |f| f.camera }, plan, :auto]
+    end
+
+    # Фасад автоматического вывода: только его плоскость режет модель,
+    # размер кадра — свой (у каждого фасада своё соотношение сторон).
+    def apply_auto_facade(facade)
+      @result.image_width = facade.image_width.to_i if facade.image_width.to_i.positive?
+      @result.image_height = facade.image_height.to_i if facade.image_height.to_i.positive?
+      @auto.activate(facade) if @auto.respond_to?(:activate)
+      @view.camera = facade.camera if facade.camera
+    rescue StandardError => e
+      FacadeExport.log("Авто-фасад: состояние не применено (#{e.message})")
+    end
+
+    # Секущие плоскости, созданные автоматическим выводом, режут всегда:
+    # это их смысл. Остальные разрезы — как у пользователя.
+    def auto_cuts?
+      return false if @facades.nil?
+      @facades.any? { |f| f.section_plane }
+    end
+
     # Габариты того, что экспортируем (кэшируются на весь экспорт).
     def export_bounds
       return [@bounds, @scope] unless @bounds.nil?
@@ -298,7 +355,8 @@ module FacadeExport
       end
       # Только дешёвые проверки: обход геометрии выполняется в export_bounds,
       # уже после окна сохранения (см. build_cameras).
-      Framing.facade_directions(@view.camera, 1)
+      # Для автоматических фасадов камера пользователя не важна.
+      Framing.facade_directions(@view.camera, 1) if @facades.nil? || @facades.empty?
       true
     end
 
@@ -344,7 +402,7 @@ module FacadeExport
         # Если разрезов в модели нет или они выключены — геометрия не режется.
         # Плоскости сечений (их рамки) не рисуем никогда: это только рамка,
         # на сам разрез она не влияет.
-        'DisplaySectionCuts'   => section_cuts?(style),
+        'DisplaySectionCuts'   => auto_cuts? ? true : section_cuts?(style),
         'DisplaySectionPlanes' => false
       }
       options['DisplayLineStyles'] = false if style.supported?('DisplayLineStyles')
@@ -722,7 +780,9 @@ module FacadeExport
     end
 
     def file_path(number, job)
-      File.join(@directory, Exporter.file_name(@base_name, number, job.title))
+      index = number - @first_number
+      label = @labels ? @labels[index] : nil
+      File.join(@directory, Exporter.file_name(@base_name, number, job.title, label))
     end
 
     def report_progress(done, total, number, job)

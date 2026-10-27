@@ -49,6 +49,20 @@ module FacadeExport
 
     DEFAULT_ASPECT = '4:3'.freeze
 
+    # Соотношения для автоматического вывода фасада: здесь нужны и
+    # вертикальные варианты (по умолчанию 3:4 — фасад «стоит»).
+    AUTO_ASPECTS = {
+      '3:4'  => [3, 4],
+      '2:3'  => [2, 3],
+      '9:16' => [9, 16],
+      '1:1'  => [1, 1],
+      '4:3'  => [4, 3],
+      '3:2'  => [3, 2],
+      '16:9' => [16, 9]
+    }.freeze
+
+    AUTO_DEFAULT_ASPECT = '3:4'.freeze
+
     # Пределы стороны изображения (ограничение SketchUp — 16000).
     MAX_IMAGE_SIDE = 16_000
     MIN_IMAGE_SIDE = 100
@@ -76,6 +90,11 @@ module FacadeExport
 
     def self.aspect_ratio(name)
       ASPECTS[name.to_s] || ASPECTS[DEFAULT_ASPECT]
+    end
+
+    # Соотношение для автоматических фасадов (включая вертикальные).
+    def self.auto_aspect_ratio(name)
+      AUTO_ASPECTS[name.to_s] || AUTO_ASPECTS[AUTO_DEFAULT_ASPECT]
     end
 
     # ---------------------------------------------------------------- defaults
@@ -117,6 +136,27 @@ module FacadeExport
         'main_h'    => 125, 'main_s'    => 100, 'main_l'    => 50,
         'tinted_h'  => 180, 'tinted_s'  => 100, 'tinted_l'  => 50,
         'railing_h' => 300, 'railing_s' => 100, 'railing_l' => 50
+      }
+    end
+
+    # Настройки вкладки «Авто-фасады» (кнопка «Автоматический вывод фасада»).
+    def self.default_auto
+      {
+        # Сцены живут только на время экспорта; можно оставить их в модели.
+        'delete_scenes'   => true,
+        # Секущая плоскость параллельно фасаду — убирает лишнюю геометрию
+        # (внутренние дворы, соседние крылья) из каждого кадра.
+        'cut_sections'    => true,
+        # Соотношение сторон по умолчанию для каждого найденного фасада.
+        'aspect'          => AUTO_DEFAULT_ASPECT,
+        # Минимальная площадь фасада в процентах от самого большого.
+        'min_area'        => 3,
+        # Сколько фасадов максимум показывать в списке.
+        'max_facades'     => 8,
+        # Имя сцены: «Фасад 1 — Север».
+        'scene_prefix'    => 'Фасад',
+        # Создавать сцены перед экспортом.
+        'create_scenes'   => true
       }
     end
 
@@ -187,6 +227,7 @@ module FacadeExport
       {
         'version' => SETTINGS_VERSION,
         'export'  => default_export,
+        'auto'    => default_auto,
         'maps'    => default_maps
       }
     end
@@ -288,6 +329,15 @@ module FacadeExport
       export[key.to_s]
     end
 
+    def auto
+      @data['auto'] ||= Config.default_auto
+    end
+
+    # Значение настройки вкладки «Авто-фасады».
+    def auto_val(key)
+      auto[key.to_s]
+    end
+
     def maps
       @data['maps']
     end
@@ -335,6 +385,8 @@ module FacadeExport
       end
       e['background'] = '#FFFFFF' if e['background'].to_s.strip.empty?
 
+      normalize_auto!
+
       list = maps
       unless list.is_a?(Array) && !list.empty?
         @data['maps'] = Config.default_maps
@@ -367,6 +419,20 @@ module FacadeExport
     end
 
     private
+
+    def normalize_auto!
+      a = @data['auto']
+      unless a.is_a?(Hash)
+        @data['auto'] = Config.default_auto
+        return
+      end
+      %w[delete_scenes cut_sections create_scenes].each { |key| a[key] = truthy(a[key]) }
+      a['aspect'] = Config::AUTO_DEFAULT_ASPECT unless Config::AUTO_ASPECTS.key?(a['aspect'].to_s)
+      a['min_area'] = clamp_float(a['min_area'], 0.0, 100.0, 3.0)
+      a['max_facades'] = clamp_int(a['max_facades'], 1, 24, 8)
+      prefix = a['scene_prefix'].to_s.strip
+      a['scene_prefix'] = 'Фасад' if prefix.empty?
+    end
 
     # Настройки старых версий (до 1.5.0, т.е. и 1.5.1): «Оставлять небо/землю» превратились
     # в «Скрывать небо/землю». Старые ключи удаляются ниже.

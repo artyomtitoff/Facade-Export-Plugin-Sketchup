@@ -31,6 +31,11 @@ module Geom
       self
     end
 
+    # Перенос на вектор не влияет — как в SketchUp для сдвига.
+    def transform(_transformation)
+      Geom::Vector3d.new(@x, @y, @z)
+    end
+
     def normalize
       copy = Geom::Vector3d.new(@x, @y, @z)
       copy.normalize!
@@ -249,6 +254,21 @@ module Sketchup
       @loops.first.vertices
     end
 
+    # Нормаль грани: по первым трём несовпадающим вершинам.
+    def normal
+      pts = vertices.map(&:position)
+      return nil if pts.length < 3
+      origin = pts[0]
+      pts[1..-1].each_with_index do |b, i|
+        c = pts[i + 2]
+        next if c.nil?
+        cross = (b - origin).cross(c - origin)
+        next if cross.length < 1.0e-9
+        return cross.normalize
+      end
+      nil
+    end
+
     # Как в SketchUp: габариты грани — по её вершинам.
     def bounds
       Geom::BoundingBox.new(@loops.flat_map { |l| l.vertices.map(&:position) })
@@ -357,6 +377,19 @@ module Sketchup
     def length
       @list.length
     end
+
+    def delete(entity)
+      @list.delete(entity)
+      self
+    end
+
+    # Как в SketchUp: плоскость сечения добавляется в набор сущностей.
+    def add_section_plane(point, normal)
+      plane = Sketchup::SectionPlane.new(true, point, normal)
+      plane.owner = self
+      @list << plane
+      plane
+    end
   end
 
   class Definition
@@ -377,9 +410,15 @@ module Sketchup
   class Dimension < Sketchup::Entity; end
 
   class SectionPlane < Sketchup::Entity
-    def initialize(active = true)
+    attr_accessor :name, :owner
+    attr_reader :point, :plane_normal
+
+    def initialize(active = true, point = nil, normal = nil)
       super()
       @active = active
+      @point = point
+      @plane_normal = normal
+      @owner = nil
     end
 
     def active?
@@ -388,6 +427,26 @@ module Sketchup
 
     def active=(value)
       @active = value
+    end
+
+    def activate
+      @owner.each { |e| e.active = false if e.is_a?(Sketchup::SectionPlane) } if @owner
+      @active = true
+      true
+    end
+
+    def visible=(value)
+      @hidden = !value
+    end
+
+    def erase!
+      @owner.delete(self) if @owner
+      @erased = true
+      true
+    end
+
+    def valid?
+      !@erased
     end
   end
 
@@ -678,6 +737,8 @@ module Sketchup
         :materials => @model.materials.map do |m|
           [m.name, m.color.to_a, m.alpha, m.texture && m.texture.filename]
         end,
+        :planes => @model.entities.select { |e| e.is_a?(Sketchup::SectionPlane) }
+                          .map { |p| [p.name, p.hidden?, p.active?] },
         :selection => @model.selection.length,
         :hidden => @model.entities.map { |e| e.hidden? }
       }
@@ -694,6 +755,85 @@ module Sketchup
       signature + body
     end
   end
+
+  # Сцена: имя, флаги обновления и состояние секущих плоскостей.
+  class Page
+    attr_accessor :name, :use_section_planes, :pages
+    attr_reader :updates, :visible_planes
+
+    def initialize(name)
+      @name = name
+      @use_section_planes = false
+      @updates = []
+      @visible_planes = []
+      @valid = true
+    end
+
+    # Как в SketchUp: update запоминает текущее состояние модели —
+    # в том числе какие плоскости сечения видны.
+    def update(flags)
+      @updates << flags
+      @visible_planes = @pages ? @pages.visible_planes : []
+      true
+    end
+
+    def valid?
+      @valid
+    end
+
+    def erase!
+      @valid = false
+    end
+  end
+
+  class Pages
+    include Enumerable
+
+    def initialize(model = nil)
+      @model = model
+      @list = []
+    end
+
+    def add(name)
+      page = Sketchup::Page.new(name)
+      page.pages = self
+      @list << page
+      page
+    end
+
+    def visible_planes
+      entities = @model ? @model.entities : nil
+      return [] if entities.nil?
+      entities.select do |e|
+        e.is_a?(Sketchup::SectionPlane) && e.hidden? != true
+      end
+    end
+
+    def erase(page)
+      page.erase! if page.respond_to?(:erase!)
+      @list.delete(page)
+      true
+    end
+
+    def each(&block)
+      @list.each(&block)
+    end
+
+    def to_a
+      @list.dup
+    end
+
+    def length
+      @list.length
+    end
+
+    def [](index)
+      @list[index]
+    end
+  end
+
+  PAGE_USE_CAMERA = 4
+  PAGE_USE_SECTION_PLANES = 16
 
   class Selection
     include Enumerable
@@ -892,6 +1032,10 @@ module Sketchup
         next unless entity.respond_to?(:definition) && entity.definition
         visible_entities_definition(entity.definition, list, depth + 1)
       end
+    end
+
+    def pages
+      @pages ||= Sketchup::Pages.new(self)
     end
 
     def selection

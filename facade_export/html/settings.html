@@ -253,6 +253,18 @@
     ["1:1", "1:1"]
   ];
 
+  // Соотношения для автоматического вывода: здесь есть и вертикальные
+  // (3:4 по умолчанию) — фасад обычно выше, чем шире.
+  var AUTO_ASPECTS = [
+    ["3:4", "3:4 (по умолчанию)"],
+    ["2:3", "2:3"],
+    ["9:16", "9:16"],
+    ["1:1", "1:1"],
+    ["4:3", "4:3"],
+    ["3:2", "3:2"],
+    ["16:9", "16:9"]
+  ];
+
   var GLASS_ROWS = [
     ["main", "Основное стекло", "непрозрачность 11–89 %"],
     ["tinted", "Тонированное стекло", "непрозрачность 90–99 %"],
@@ -386,6 +398,42 @@
 
     html += '<details class="adv"><summary>Расширенные настройки</summary>' +
             '<div class="adv-body">' + adv + '</div></details>';
+    html += '</section>';
+    return html;
+  }
+
+  /* ------------------------------------------- вкладка «Авто-фасады» */
+
+  function autoTab() {
+    var html = '<section class="tab" id="tab-auto">';
+    html += '<div class="card"><h2>Автоматический вывод фасада</h2>';
+    html += '<div class="hint">Кнопка «Автоматический вывод фасада» сама находит ' +
+            'фасады в открытой группе (или во всей модели), подрезает лишнюю ' +
+            'геометрию сечением и создаёт сцены. Камеру выравнивать не нужно.</div>';
+    html += '<div class="grid" style="margin-top:12px">';
+    html += selectField('auto.aspect', 'Соотношение сторон по умолчанию', AUTO_ASPECTS,
+      'Можно поменять у каждого фасада в окне вывода.');
+    html += textField('auto.scene_prefix', 'Начало имени сцены',
+      'Имя фасада в окне: «Фасад 1».');
+    html += '</div></div>';
+
+    html += '<div class="card"><h2>Сцены и сечения</h2><div class="grid one">';
+    html += checkField('auto.create_scenes', 'Создавать сцены для найденных фасадов',
+      'В каждой сцене своя камера и только своя секущая плоскость.');
+    html += checkField('auto.delete_scenes', 'Удалять сцены после экспорта',
+      'По умолчанию сцены временные: после экспорта в модели остаётся ' +
+      'то же, что было до нажатия кнопки.');
+    html += checkField('auto.cut_sections', 'Подрезать лишнюю геометрию сечением',
+      'Плоскость параллельна фасаду и убирает внутренние дворы и соседние ' +
+      'крылья. Сам фасад остаётся целым.');
+    html += '</div></div>';
+
+    html += '<div class="card"><h2>Отбор фасадов</h2><div class="grid">';
+    html += numberField('auto.min_area', 'Минимальная площадь фасада, %',
+      0, 100, 1, 'Процент от самого большого фасада: мелочь в список не попадает.');
+    html += numberField('auto.max_facades', 'Максимум фасадов в списке', 1, 24, 1,
+      'Сколько фасадов показывать в окне автоматического вывода.');
+    html += '</div></div>';
     html += '</section>';
     return html;
   }
@@ -554,8 +602,9 @@
   function render() {
     var content = document.getElementById('content');
     var tabs = document.getElementById('tabs');
-    var html = exportTab();
+    var html = exportTab() + autoTab();
     var tabsHtml = '<button type="button" data-tab="export">Экспорт</button>';
+    tabsHtml += '<button type="button" data-tab="auto">Авто-фасады</button>';
 
     settings.maps.forEach(function (map, i) {
       html += mapTab(map, i);

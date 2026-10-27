@@ -16,7 +16,8 @@ import { DefaultRubyVM } from "@ruby/wasm-wasi/dist/browser";
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 
 const LIB_ORDER = [
-  "config", "util", "scene_state", "framing", "sun", "glass", "exporter", "dialogs", "main",
+  "config", "util", "scene_state", "framing", "sun", "glass", "exporter",
+  "auto_facades", "auto_export", "dialogs", "main",
 ];
 
 const read = (rel) => fs.readFile(path.join(root, rel), "utf8");
@@ -117,7 +118,7 @@ async function runTests(vm) {
 async function checkIcons() {
   const dir = path.join(root, "facade_export", "icons");
   let ok = true;
-  for (const name of ["export_all", "export_one", "settings"]) {
+  for (const name of ["export_all", "export_one", "auto", "settings"]) {
     for (const size of [24, 32]) {
       const file = path.join(dir, `${name}_${size}.png`);
       try {

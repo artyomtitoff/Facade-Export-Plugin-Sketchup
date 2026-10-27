@@ -170,6 +170,69 @@ module FacadeExport
       FacadeExport.log("Не удалось передать настройки в окно: #{e.message}")
     end
 
+    # -------------------------------------------- окно автоматических фасадов
+
+    # Окно со списком найденных фасадов: превью, имя, соотношение сторон.
+    # payload — данные из AutoExport.build_payload (хеш, уходит в JS как JSON).
+    def show_auto_facades(payload)
+      close_auto_facades
+      dialog = UI::HtmlDialog.new(
+        :dialog_title    => 'Экспорт фасадов — автоматический вывод',
+        :preferences_key => 'FacadeExport.auto_dialog',
+        :scrollable      => true,
+        :resizable       => true,
+        :width           => 940,
+        :height          => 740,
+        :min_width       => 720,
+        :min_height      => 520,
+        :style           => UI::HtmlDialog::STYLE_DIALOG
+      )
+
+      dialog.add_action_callback('ready') do |_context, _data|
+        push_auto_data(dialog, payload)
+      end
+
+      dialog.add_action_callback('export') do |_context, data|
+        begin
+          dialog.close
+        rescue StandardError
+          nil
+        end
+        AutoExport.export(data)
+      end
+
+      dialog.add_action_callback('cancel') do |_context, _data|
+        dialog.close
+      end
+
+      html = File.join(FacadeExport::PATH, 'html', 'auto.html')
+      if File.exist?(html)
+        dialog.set_file(html)
+      else
+        dialog.set_html('<p style="font-family:sans-serif">Не найден файл auto.html</p>')
+      end
+      dialog.show
+      @auto_dialog = dialog
+    end
+
+    def push_auto_data(dialog, payload)
+      json = JSON.generate(payload)
+      # Строка, безопасная для вставки в JS (как в настройках).
+      dialog.execute_script("FacadeExportAuto.setData(#{JSON.generate(json)});")
+    rescue StandardError => e
+      FacadeExport.log("Не удалось передать фасады в окно: #{e.message}")
+    end
+
+    def close_auto_facades
+      return if @auto_dialog.nil?
+      begin
+        @auto_dialog.close
+      rescue StandardError
+        nil
+      end
+      @auto_dialog = nil
+    end
+
     # ------------------------------------------------------------- прочее
 
     def about
