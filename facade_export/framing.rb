@@ -488,7 +488,7 @@ module FacadeExport
       distance = if parallel
                    camera_distance(bounds, frame_height, projection, scale)
                  else
-                   perspective_distance(bounds)
+                   perspective_distance(frame_height)
                  end
       eye = Geom::Point3d.new(
         target.x - direction.x * distance,
@@ -550,20 +550,21 @@ module FacadeExport
       camera
     end
 
-    # Расстояние для перспективной камеры: габаритный шар целиком в кадре.
-    def perspective_distance(bounds)
-      diag = 1.0
-      begin
-        d = bounds.max - bounds.min
-        diag = Math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z)
-      rescue StandardError
-        diag = 1000.0
-      end
-      diag = 1000.0 if diag.nil? || diag.to_f <= 0.0 || diag.to_f.nan?
-      half_fov = (FOV / 2.0) * Math::PI / 180.0
-      sin_half = Math.sin(half_fov)
-      return diag * 2.0 if sin_half <= 0.0
-      diag / 2.0 / sin_half * 1.05
+    # Расстояние для перспективной камеры.
+    #
+    # Кадр должен показывать ровно ту же область, что и параллельный:
+    # по вертикали — frame_height единиц модели. Расстояние подбирается так,
+    # чтобы на плоскости цели вертикальный угол обзора FOV накрывал ровно
+    # frame_height: D = (frame_height / 2) / tan(FOV / 2).
+    #
+    # Раньше здесь вписывался описанный шар модели, и перспективный экспорт
+    # «отъезжал»: фасад занимал лишь часть кадра, а по краям оставались поля.
+    def perspective_distance(frame_height)
+      height = frame_height.to_f
+      height = 1000.0 unless height.finite? && height > 0.0
+      tan_half = Math.tan(FOV * Math::PI / 360.0)
+      return height * 2.0 if tan_half <= 0.0
+      height / 2.0 / tan_half
     end
 
     # Камера стоит достаточно далеко, чтобы отсечение не срезало геометрию.
@@ -741,6 +742,12 @@ module FacadeExport
       width, height, vertical = image_size(export_settings, projections)
       gap = gap_pixels(export_settings, width, height)
       scale = pixels_per_unit(projections, width, height, gap)
+      span = begin
+        d = bounds.max - bounds.min
+        [d.x.to_f.abs, d.y.to_f.abs, d.z.to_f.abs]
+      rescue StandardError
+        [0.0, 0.0, 0.0]
+      end
       {
         :projections => projections,
         :image_width => width,
@@ -748,7 +755,8 @@ module FacadeExport
         :vertical => vertical,
         :gap => gap,
         :scale => scale,
-        :biggest => biggest_index(projections)
+        :biggest => biggest_index(projections),
+        :span => span
       }
     end
   end
