@@ -6,7 +6,7 @@ require_relative 'mock_sketchup' unless defined?(Sketchup::Model)
 
 unless defined?(FacadeExport::Exporter)
   ROOT = File.expand_path('../facade_export', __dir__)
-  %w[config util scene_state framing sun glass exporter dialogs].each do |file|
+  %w[config util scene_state framing sun glass exporter auto_facades auto_export dialogs].each do |file|
     require File.join(ROOT, file)
   end
 end
@@ -1137,7 +1137,10 @@ FacadeExport.instance_variable_set(:@ui_registered, nil)
 FacadeExport.register_ui
 check('Меню/панель зарегистрированы', FacadeExport.instance_variable_get(:@ui_registered) == true)
 commands = FacadeExport.instance_variable_get(:@commands)
-check('Четыре команды (2 экспорта, настройки, о плагине)', commands.length == 4,
+check('Пять команд (2 экспорта, авто-вывод, настройки, о плагине)', commands.length == 5,
+      commands.map(&:name).inspect)
+check('Есть команда «Автоматический вывод фасада»',
+      commands.map(&:name).include?('Автоматический вывод фасада'),
       commands.map(&:name).inspect)
 check('Отсутствие файлов иконок не ломает регистрацию', FacadeExport::PATH.to_s.end_with?('facade_export'),
       FacadeExport::PATH.inspect)
@@ -1595,6 +1598,355 @@ view = export_once(model)
 check('Неактивная плоскость внутри группы не режет',
       view.writes.all? { |w| w[:rendering]['DisplaySectionCuts'] == false },
       view.writes.map { |w| w[:rendering]['DisplaySectionCuts'] }.uniq.inspect)
+
+
+# ------------------------------------------------ 21. автоматический вывод фасада
+
+section 'Автоматический вывод: поиск фасадов'
+
+# Коробка из шести граней: нормали смотрят наружу.
+def add_box_faces(entities, size_x, size_y, size_z, offset_x = 0.0, offset_y = 0.0, offset_z = 0.0)
+  pt = lambda { |x, y, z| Geom::Point3d.new(offset_x + x, offset_y + y, offset_z + z) }
+  faces = [
+    [[0, 0, 0], [0, size_y, 0], [size_x, size_y, 0], [size_x, 0, 0]],
+    [[0, 0, size_z], [size_x, 0, size_z], [size_x, size_y, size_z], [0, size_y, size_z]],
+    [[0, 0, 0], [size_x, 0, 0], [size_x, 0, size_z], [0, 0, size_z]],
+    [[0, size_y, 0], [0, size_y, size_z], [size_x, size_y, size_z], [size_x, size_y, 0]],
+    [[0, 0, 0], [0, 0, size_z], [0, size_y, size_z], [0, size_y, 0]],
+    [[size_x, 0, 0], [size_x, size_y, 0], [size_x, size_y, size_z], [size_x, 0, size_z]]
+  ]
+  faces.each do |list|
+    entities.add(Sketchup::Face.new(list.map { |corner| pt.call(*corner) }))
+  end
+  entities
+end
+
+def box_facade_model(size_x = 1200.0, size_y = 800.0, size_z = 600.0)
+  model = new_model
+  model.entities.clear
+  add_box_faces(model.entities, size_x, size_y, size_z)
+  model
+end
+
+# Настройки «как в плагине» по умолчанию.
+fresh_settings
+model = box_facade_model
+detector = FacadeExport::AutoFacades.new(model, FacadeExport.settings)
+found = detector.detect
+facades = found[:facades]
+
+check('У коробки найдены 4 фасада', facades.length == 4, facades.map(&:index).inspect)
+check('Крыша и пол фасадами не считаются',
+      facades.all? { |f| f.normal.z.abs < 1.0e-6 },
+      facades.map { |f| f.normal.z.round(3) }.inspect)
+check('Камера смотрит на фасад: direction = -normal',
+      facades.all? { |f| (f.direction.x + f.normal.x).abs < 1.0e-9 &&
+                        (f.direction.y + f.normal.y).abs < 1.0e-9 })
+check('Фасады идут по кругу (по азимуту)',
+      facades.each_cons(2).all? { |a, b| a.index < b.index },
+      facades.map(&:index).inspect)
+check('У каждого фасада есть упрощённое превью',
+      facades.all? { |f| f.polygons.any? && f.polygons.first.length >= 3 },
+      facades.map { |f| f.polygons.length }.inspect)
+plan = found[:plan] || {}
+check('Схема сверху построена', (plan['cells'] || []).length > 20, (plan['cells'] || []).length)
+check('Схема — сетка 32 × 32', plan['grid'] == FacadeExport::AutoFacades::PLAN_GRID,
+      plan['grid'].inspect)
+check('Клетки схемы в пределах сетки',
+      (plan['cells'] || []).all? { |x, y| x.between?(0, 31) && y.between?(0, 31) },
+      (plan['cells'] || []).first(5).inspect)
+columns = (plan['cells'] || []).map(&:first).uniq.sort
+check('Крыша залита целиком: все 32 колонки',
+      columns == (0..31).to_a,
+      columns.inspect)
+check('Пропорции схемы сохранены (1200×800 → 32×21 клетка)',
+      (plan['cells'] || []).map(&:last).uniq.length.between?(20, 22),
+      (plan['cells'] || []).map(&:last).uniq.length)
+check('Область анализа — вся модель', found[:scope] == :model, found[:scope].inspect)
+check('Имена сцен по сторонам света',
+      facades.map(&:page_name).join('|').include?('север'),
+      facades.map(&:page_name).inspect)
+
+# Камеры: 3:4 по умолчанию, единый масштаб, фасад прижат к низу кадра.
+detector.build_cameras!(facades)
+first = facades.first
+check('Кадр по умолчанию 3:4: 7499×9999',
+      [first.image_width, first.image_height] == [7499, 9999],
+      [first.image_width, first.image_height].inspect)
+check('Камеры параллельные',
+      facades.all? { |f| f.camera && f.camera.perspective? == false })
+scales = facades.map { |f| f.image_height.to_f / f.camera.height.to_f }
+check('Масштаб общий для всех фасадов',
+      scales.max - scales.min < 1.0e-6,
+      scales.inspect)
+gaps = facades.map do |f|
+  bottom = f.points.map { |p| p.z }.min
+  frame_bottom = f.camera.target.z - f.camera.height / 2.0
+  ((bottom - frame_bottom) * (f.image_height / f.camera.height)).round
+end
+check('Фасад прижат к низу кадра на отступ (200 px)',
+      gaps.uniq == [200], gaps.inspect)
+check('Сторона света в имени фасада совпадает с нормалью',
+      first.page_name.end_with?(facades.first.normal.y >= 0 ? 'север' : 'юг') ||
+      first.page_name.end_with?(facades.first.normal.x >= 0 ? 'восток' : 'запад'),
+      first.page_name.inspect)
+
+# Группа: анализ идёт по открытой группе, а не по всей модели.
+model = new_model
+model.entities.clear
+add_box_faces(model.entities, 4000, 4000, 300)
+definition = Sketchup::Definition.new(box_points(1200, 800, 600))
+add_box_faces(definition.entities, 1200, 800, 600)
+group = Sketchup::GroupInstance.new(definition, Geom::Transformation.new(0, 0, 0))
+model.entities.add(group)
+model.active_path = [group]
+inside = FacadeExport::AutoFacades.new(model, FacadeExport.settings).detect
+check('Внутри группы анализируется группа', inside[:scope] == :context, inside[:scope].inspect)
+check('Внутри группы найдены её 4 фасада', inside[:facades].length == 4,
+      inside[:facades].length)
+check('Внутри группы габариты — по группе',
+      inside[:facades].all? { |f| f.points.map(&:z).max < 601 },
+      inside[:facades].map { |f| f.points.map(&:z).max }.inspect)
+model.active_path = []
+
+# Схема сверху не «заливает» разрыв между объёмами.
+model = new_model
+model.entities.clear
+add_box_faces(model.entities, 400, 400, 300, 0, 0, 0)
+add_box_faces(model.entities, 400, 400, 300, 800, 0, 0)
+gap_plan = FacadeExport::AutoFacades.new(model, FacadeExport.settings).detect[:plan]
+gap_cells = gap_plan['cells'] || []
+check('Схема сверху не заливает пустоту между объёмами',
+      !gap_cells.any? { |x, _y| x.between?(11, 20) },
+      gap_cells.map(&:first).uniq.sort.inspect)
+
+# Скрытая группа не попадает в анализ.
+model = new_model
+model.entities.clear
+definition = Sketchup::Definition.new(box_points(1200, 800, 600))
+add_box_faces(definition.entities, 1200, 800, 600)
+hidden_group = Sketchup::GroupInstance.new(definition, Geom::Transformation.new(0, 0, 0))
+hidden_group.hidden = true
+model.entities.add(hidden_group)
+hidden_result = begin
+  FacadeExport::AutoFacades.new(model, FacadeExport.settings).detect
+  nil
+rescue FacadeExport::ExportError => e
+  e
+end
+check('Скрытая группа не считается фасадом',
+      hidden_result.is_a?(FacadeExport::ExportError),
+      hidden_result.inspect)
+
+section 'Автоматический вывод: сечения и сцены'
+
+fresh_settings
+model = box_facade_model
+user_plane = Sketchup::SectionPlane.new(true)
+model.entities.add(user_plane)
+detector = FacadeExport::AutoFacades.new(model, FacadeExport.settings)
+facades = detector.detect[:facades]
+detector.build_cameras!(facades)
+planes = detector.create_planes!(facades)
+
+check('Создано по плоскости на фасад', planes.length == 4, planes.length)
+check('Плоскости добавлены в контекст модели',
+      model.entities.select { |e| e.is_a?(Sketchup::SectionPlane) }.length == 5)
+check('Нормаль плоскости смотрит в здание',
+      facades.all? do |f|
+        n = f.section_plane.plane_normal
+        (n.x * f.normal.x + n.y * f.normal.y + 1.0).abs < 1.0e-6
+      end)
+check('Плоскость стоит перед фасадом, со стороны камеры',
+      facades.all? do |f|
+        facade_d = f.points.map { |p| p.x * f.normal.x + p.y * f.normal.y }.max
+        plane = f.section_plane.point
+        plane_d = plane.x * f.normal.x + plane.y * f.normal.y
+        plane_d > facade_d && (plane_d - facade_d) < 10.0
+      end,
+      facades.map { |f| f.section_plane.point.to_a.map { |v| v.round(2) } }.inspect)
+
+detector.create_scenes!(facades)
+pages = model.pages
+check('Сцена на каждый фасад', pages.length == 4, pages.length)
+check('Сцены запоминают секущие плоскости',
+      pages.all? { |page| page.use_section_planes == true })
+expected_flags = Sketchup::PAGE_USE_CAMERA | Sketchup::PAGE_USE_SECTION_PLANES
+check('Сцены запоминают камеру и плоскости', pages.all? { |page| page.updates == [expected_flags] },
+      pages.map(&:updates).inspect)
+check('В каждой сцене видна только своя плоскость',
+      pages.to_a.each_with_index.all? do |page, i|
+        (page.visible_planes & detector.planes) == [facades[i].section_plane]
+      end,
+      pages.map { |page| (page.visible_planes & detector.planes).length }.inspect)
+check('Плоскость пользователя в сценах не трогается',
+      pages.all? { |page| page.visible_planes.include?(user_plane) })
+check('Сцены названы по фасадам',
+      pages.map(&:name) == facades.map(&:page_name),
+      pages.map(&:name).inspect)
+
+detector.cleanup!(false)
+check('После уборки сцены удалены', model.pages.length.zero?, model.pages.length)
+check('После уборки плоскости удалены',
+      model.entities.select { |e| e.is_a?(Sketchup::SectionPlane) }.length == 1)
+check('Плоскость пользователя снова активна', user_plane.active? == true)
+check('Плоскость пользователя снова видна', user_plane.hidden? == false)
+
+# Режим «оставить сцены» (auto.delete_scenes = false).
+fresh_settings
+FacadeExport.settings.auto['delete_scenes'] = false
+model = box_facade_model
+detector = FacadeExport::AutoFacades.new(model, FacadeExport.settings)
+facades = detector.detect[:facades]
+detector.build_cameras!(facades)
+detector.create_planes!(facades)
+detector.create_scenes!(facades)
+detector.cleanup!(true)
+check('Сцены можно оставить в модели', model.pages.length == 4, model.pages.length)
+check('Плоскости остаются вместе со сценами',
+      model.entities.select { |e| e.is_a?(Sketchup::SectionPlane) }.length == 4)
+
+# Настройка «не подрезать сечением».
+fresh_settings
+FacadeExport.settings.auto['cut_sections'] = false
+model = box_facade_model
+detector = FacadeExport::AutoFacades.new(model, FacadeExport.settings)
+facades = detector.detect[:facades]
+detector.build_cameras!(facades)
+check('Без подрезки плоскости не создаются', detector.create_planes!(facades).empty?)
+
+section 'Автоматический вывод: экспорт по фасадам'
+
+fresh_settings
+clean_out
+model = box_facade_model
+# Пользователь выключил разрезы — авто-вывод всё равно режет свои фасады.
+model.rendering_options['DisplaySectionCuts'] = false
+view = model.active_view
+detector = FacadeExport::AutoFacades.new(model, FacadeExport.settings)
+facades = detector.detect[:facades].first(2)
+facades[0].aspect = '3:4'
+facades[0].name = 'Север'
+facades[1].aspect = '1:1'
+facades[1].name = 'Юг'
+detector.build_cameras!(facades)
+detector.create_planes!(facades)
+Exporter = FacadeExport::Exporter
+exported = Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'Дом',
+  :facades => facades, :auto => detector,
+  :labels => facades.map(&:name)
+).run
+
+jobs = FacadeExport::Exporter.output_jobs(FacadeExport.settings).length
+check('Файлов — фасады × карты', exported.files.length == 2 * jobs,
+      [exported.files.length, 2 * jobs].inspect)
+names = exported.files.map { |path| File.basename(path) }
+check('Имена файлов — из имён фасадов',
+      names.include?('Дом_Север_Текстура.png') && names.include?('Дом_Юг_Текстура.png'),
+      names.inspect)
+sizes = view.writes.group_by { |w| File.basename(w[:path]).include?('Север') ? :north : :south }
+north = sizes[:north] || []
+south = sizes[:south] || []
+check('Своё соотношение у каждого фасада: 3:4',
+      north.all? { |w| [w[:width], w[:height]] == [7499, 9999] },
+      north.map { |w| [w[:width], w[:height]] }.uniq.inspect)
+check('Своё соотношение у каждого фасада: 1:1',
+      south.all? { |w| [w[:width], w[:height]] == [9999, 9999] },
+      south.map { |w| [w[:width], w[:height]] }.uniq.inspect)
+check('Свои камеры: каждая картинка — со своей камеры',
+      north.all? { |w| w[:camera].equal?(facades[0].camera) } &&
+      south.all? { |w| w[:camera].equal?(facades[1].camera) })
+check('Авто-фасады режут модель всегда (DisplaySectionCuts)',
+      view.writes.all? { |w| w[:rendering]['DisplaySectionCuts'] == true },
+      view.writes.map { |w| w[:rendering]['DisplaySectionCuts'] }.uniq.inspect)
+check('Рамки плоскостей не рисуются',
+      view.writes.all? { |w| w[:rendering]['DisplaySectionPlanes'] == false })
+active = view.writes.map { |w| w[:planes].select { |(_n, hidden, on)| hidden == false && on }.map(&:first) }
+check('В каждом кадре активна ровно одна своя плоскость',
+      active.all? { |list| list.length == 1 }, active.uniq.inspect)
+check('Плоскость меняется вместе с фасадом',
+      active.map(&:first).uniq.length == 2, active.map(&:first).uniq.inspect)
+
+detector.cleanup!(false)
+check('После экспорта плоскости убраны',
+      model.entities.select { |e| e.is_a?(Sketchup::SectionPlane) }.empty?)
+check('После экспорта разрезы пользователя как были',
+      model.rendering_options['DisplaySectionCuts'] == false)
+
+section 'Автоматический вывод: настройки и имена файлов'
+
+fresh_settings
+auto = FacadeExport.settings.auto
+check('По умолчанию сцены временные (удаляются)', auto['delete_scenes'] == true)
+check('По умолчанию сечение подрезает', auto['cut_sections'] == true)
+check('По умолчанию соотношение 3:4', auto['aspect'] == '3:4', auto['aspect'].inspect)
+check('По умолчанию имя начинается с «Фасад»', auto['scene_prefix'] == 'Фасад')
+check('Вертикальное соотношение есть в списке',
+      FacadeExport::Config::AUTO_ASPECTS.key?('3:4'))
+
+FacadeExport.settings.replace!(
+  'auto' => { 'aspect' => 'битое', 'min_area' => 500, 'max_facades' => 0, 'scene_prefix' => '  ' }
+)
+auto = FacadeExport.settings.auto
+check('Битое соотношение заменяется на 3:4', auto['aspect'] == '3:4', auto['aspect'].inspect)
+check('min_area ограничен 100 %', auto['min_area'].to_f <= 100.0, auto['min_area'].inspect)
+check('max_facades не меньше 1', auto['max_facades'].to_i >= 1, auto['max_facades'].inspect)
+check('Пустое имя сцены заменяется на «Фасад»', auto['scene_prefix'] == 'Фасад')
+
+fresh_settings
+check('Имя файла без имени фасада — прежний шаблон',
+      FacadeExport::Exporter.file_name('Дом', 2, 'Текстура') == 'Дом_Фасад_2_Текстура.png')
+check('Имя файла с именем фасада',
+      FacadeExport::Exporter.file_name('Дом', 1, 'Текстура', 'Север') == 'Дом_Север_Текстура.png')
+check('Имя фасада чистится от запрещённых символов',
+      FacadeExport::Exporter.file_name('Дом', 1, 'Окна', 'Север:1?') == 'Дом_Север_1__Окна.png',
+      FacadeExport::Exporter.file_name('Дом', 1, 'Окна', 'Север:1?'))
+
+
+section 'Автоматический вывод: окно и выбор фасадов'
+
+fresh_settings
+model = box_facade_model
+UI.messages = []
+payload = FacadeExport::AutoExport.start
+
+check('Кнопка отдаёт данные в окно', !payload.nil?)
+check('В данных есть план здания', (payload['plan']['cells'] || []).any?,
+      payload['plan'].inspect[0, 80])
+check('В данных есть 4 фасада', payload['facades'].length == 4)
+check('У фасада в окне есть нормаль и превью',
+      payload['facades'].all? { |f| f['normal'].length == 2 && f['polygons'].any? })
+check('Соотношение по умолчанию отдано окну', payload['defaultAspect'] == '3:4',
+      payload['defaultAspect'].inspect)
+check('В списке соотношений есть 3:4 и 1:1',
+      payload['aspects'].map(&:first).include?('3:4') &&
+      payload['aspects'].map(&:first).include?('1:1'))
+check('Длинная сторона из настроек экспорта', payload['longestSide'] == 9999,
+      payload['longestSide'].inspect)
+check('Окно знает про временные сцены', payload['deleteScenes'] == true)
+check('Окно знает про подрезку сечением', payload['cutSections'] == true)
+check('Имя модели передано в окно', payload['baseName'] == 'Заречная', payload['baseName'].inspect)
+
+choice = {
+  'facades' => [
+    { 'index' => 1, 'selected' => true, 'name' => 'Север', 'aspect' => '1:1' },
+    { 'index' => 2, 'selected' => false, 'name' => 'Восток', 'aspect' => '3:4' },
+    { 'index' => 3, 'selected' => true, 'name' => '  ', 'aspect' => 'битое' },
+    { 'index' => 9, 'selected' => true, 'name' => 'Лишний', 'aspect' => '3:4' }
+  ]
+}
+facades = FacadeExport::AutoExport.instance_variable_get(:@facades)
+chosen = FacadeExport::AutoExport.apply_selection(facades, choice)
+check('Выбраны только отмеченные фасады', chosen.length == 2, chosen.length)
+check('Снятая галочка исключает фасад', chosen.none? { |f| f.index == 2 })
+check('Имя фасада берётся из окна', chosen[0].name == 'Север', chosen[0].name)
+check('Соотношение берётся из окна', chosen[0].aspect == '1:1', chosen[0].aspect)
+check('Пустое имя заменяется именем сцены', chosen[1].name == chosen[1].page_name,
+      chosen[1].name)
+check('Битое соотношение заменяется на 3:4', chosen[1].aspect == '3:4', chosen[1].aspect)
+check('Несуществующий фасад игнорируется', chosen.none? { |f| f.index == 9 })
 
 # ------------------------------------------------------------------ итог
 

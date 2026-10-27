@@ -12,11 +12,13 @@ require_relative 'framing'
 require_relative 'sun'
 require_relative 'glass'
 require_relative 'exporter'
+require_relative 'auto_facades'
+require_relative 'auto_export'
 require_relative 'dialogs'
 
 module FacadeExport
   PLUGIN_NAME = 'Экспорт фасадов'
-  VERSION     = '1.5.2'
+  VERSION     = '1.5.3'
   AUTHOR      = 'Артем Титов motivate_rt'
   PATH = File.expand_path(File.dirname(__FILE__)) unless defined?(PATH) && PATH
 
@@ -43,6 +45,15 @@ module FacadeExport
 
     def export_single_facade
       export_facades(1)
+    end
+
+    # Кнопка «Автоматический вывод фасада»: анализ модели + окно со списком.
+    def auto_facades
+      AutoExport.start
+    rescue StandardError => e
+      log("Авто-фасады: #{e.message}\n#{e.backtrace.first(8).join("\n")}")
+      UI.messagebox("Не удалось выполнить автоматический вывод: #{e.message}")
+      nil
     end
 
     def export_facades(count)
@@ -171,6 +182,13 @@ module FacadeExport
       command_one.menu_text = 'Экспорт фасада'
       set_icons(command_one, 'export_one')
 
+      command_auto = UI::Command.new('Автоматический вывод фасада') { auto_facades }
+      command_auto.tooltip = 'Автоматический вывод фасада: найти фасады в открытой группе'
+      command_auto.status_bar_text = 'Находит фасады в модели, режет лишнее сечением ' \
+                                     'и создаёт сцены — камеру выравнивать не нужно'
+      command_auto.menu_text = 'Автоматический вывод фасада'
+      set_icons(command_auto, 'auto')
+
       command_settings = UI::Command.new('Настройки…') { open_settings }
       command_settings.tooltip = 'Настройки карт и параметров экспорта'
       command_settings.status_bar_text = 'Настройки плагина "Экспорт фасадов"'
@@ -182,6 +200,7 @@ module FacadeExport
       toolbar = UI::Toolbar.new(PLUGIN_NAME)
       toolbar.add_item(command_all)
       toolbar.add_item(command_one)
+      toolbar.add_item(command_auto)
       toolbar.add_separator
       toolbar.add_item(command_settings)
       show_toolbar(toolbar)
@@ -189,12 +208,13 @@ module FacadeExport
       menu = UI.menu('Extensions').add_submenu(PLUGIN_NAME)
       menu.add_item(command_all)
       menu.add_item(command_one)
+      menu.add_item(command_auto)
       menu.add_separator
       menu.add_item(command_settings)
       menu.add_item(command_about)
 
       @toolbar = toolbar
-      @commands = [command_all, command_one, command_settings, command_about]
+      @commands = [command_all, command_one, command_auto, command_settings, command_about]
       @ui_registered = true
       true
     end
