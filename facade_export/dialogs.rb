@@ -219,6 +219,15 @@ module FacadeExport
         end
       end
 
+      dialog.add_action_callback('invert_facade') do |_context, data|
+        begin
+          AutoExport.invert_facade(data)
+        rescue StandardError => e
+          FacadeExport.log("Авто-фасады: фасад не развёрнут (#{e.message})")
+          UI.messagebox("Не удалось развернуть фасад: #{e.message}")
+        end
+      end
+
       dialog.add_action_callback('cancel') do |_context, _data|
         dialog.close
       end
@@ -240,6 +249,15 @@ module FacadeExport
       @auto_dialog.execute_script("FacadeExportAuto.addFacade(#{JSON.generate(json)});")
     rescue StandardError => e
       FacadeExport.log("Не удалось передать фасад в окно: #{e.message}")
+    end
+
+    # Точечное обновление окна: фасад развернули (та же строка).
+    def push_auto_update(payload)
+      return unless @auto_dialog
+      json = JSON.generate(payload)
+      @auto_dialog.execute_script("FacadeExportAuto.updateFacade(#{JSON.generate(json)});")
+    rescue StandardError => e
+      FacadeExport.log("Не удалось обновить фасад в окне: #{e.message}")
     end
 
     def push_auto_data(dialog, payload)

@@ -44,6 +44,11 @@ const payload = {
       }
       return cells;
     })(),
+    // Контур сверху — как его отдаёт Ruby: залитые грани «сверху».
+    polygons: [[
+      [0, 0], [1000, 0], [1000, 1000], [675, 1000], [675, 450],
+      [400, 450], [400, 1000], [0, 1000],
+    ]],
   },
   aspects: [
     ["3:4", "3:4 (по умолчанию)"],
@@ -131,20 +136,23 @@ check("В шапке — область анализа и число фасад�
   doc.getElementById("subtitle").textContent);
 check("В шапке нет пустого текста", !doc.getElementById("subtitle").textContent.includes("…"));
 
-const rects = doc.querySelectorAll("#canvas svg rect");
-check("Схема нарисована клетками контура", rects.length === payload.plan.cells.length + 1,
-  `${rects.length} / ${payload.plan.cells.length}`);
-const courtyardFilled = [...rects].some((r) => {
-  const x = Number(r.getAttribute("x"));
-  const y = Number(r.getAttribute("y"));
-  return x >= courtyardX[0] * 25 && x < courtyardX[1] * 25 + 25 &&
-    y >= courtyardY[0] * 25;
-});
-check("Внутренний двор на схеме пустой", !courtyardFilled);
+const contour = doc.querySelectorAll("#canvas svg polygon");
+check("Контур нарисован заливкой граней без обводки",
+  contour.length === payload.plan.polygons.length &&
+  !contour[0].getAttribute("stroke"), contour.length);
+check("Внутренний двор на схеме пустой",
+  window.FacadeExportAuto._debug.insideBuilding(500, 620) === false);
+check("Двор не залит контуром",
+  window.FacadeExportAuto._debug.insideBuilding(500, 300) === true);
 check("Стена нарисована на каждый фасад", walls("#e03131", 22).length === 4,
   walls("#e03131", 22).length);
-check("Носик наружу у каждой стены",
-  [...doc.querySelectorAll('#canvas svg line[stroke="#e03131"][stroke-width="11"]')].length === 4);
+check("Стрелка — треугольник наружу у каждой стены",
+  [...doc.querySelectorAll('#canvas svg path[fill="#e03131"]')].length === 4,
+  doc.querySelectorAll('#canvas svg path').length);
+check("Кружок с номером небольшой", (() => {
+  const c = doc.querySelector('#canvas svg circle[stroke="#e03131"]');
+  return c && Number(c.getAttribute("r")) <= 18;
+})());
 check("Номер фасада на схеме", badges().length === 4 &&
   badges().map((t) => t.textContent.trim()).join(",") === "1,2,3,4",
   badges().map((t) => t.textContent.trim()).join(","));
@@ -208,6 +216,13 @@ check("Размер PNG пересчитан под 1:1",
   second.querySelector('[data-role="px"]')?.textContent);
 check("Смена соотношения не выключает фасад", !second.classList.contains("off"));
 
+// Кнопка «⇄» в строке просит Ruby развернуть фасад.
+let inverted = null;
+window.sketchup.invert_facade = (json) => { inverted = JSON.parse(json); };
+fire(rows()[0].querySelector('[data-role="flip"]'), "click");
+check("Кнопка «⇄» просит Ruby развернуть фасад",
+  inverted && inverted.index === 1, JSON.stringify(inverted));
+
 check("Пока экспорт не нажат, в Ruby ничего не ушло", calls.exported === null);
 fire(doc.getElementById("btn-export"), "click");
 const sent = JSON.parse(calls.exported);
@@ -250,6 +265,16 @@ check("Добавленный фасад появился в списке", rows
 check("Добавленный фасад появился на схеме", badges().length === 5, badges().length);
 window.FacadeExportAuto.addFacade(JSON.stringify({ ok: false, message: "Здесь стена не найдена" }));
 check("Отказ показан пользователю", footnote().includes("стена не найдена"), footnote());
+
+// Разворот фасада: Ruby возвращает ту же строку с перевёрнутой нормалью.
+window.FacadeExportAuto.updateFacade(JSON.stringify({
+  ok: true, index: 3, name: "Фасад 3", aspect: "3:4",
+  segment: { from: [90, 880], to: [910, 880], normal: [0, -1], area: 720 },
+}));
+const flipped = window.FacadeExportAuto._state().find((s) => s.index === 3);
+check("Разворот фасада меняет направление стрелки",
+  flipped.segment.normal[1] === -1, JSON.stringify(flipped.segment.normal));
+check("Разворот не двигает фасад", rows().length === 5);
 
 fire(doc.getElementById("btn-cancel"), "click");
 check("По «Отмена» вызван Ruby-callback", calls.canceled === 1);

@@ -433,7 +433,7 @@ module FacadeExport
       %w[delete_scenes cut_sections create_scenes].each { |key| a[key] = truthy(a[key]) }
       a['aspect'] = Config::AUTO_DEFAULT_ASPECT unless Config::AUTO_ASPECTS.key?(a['aspect'].to_s)
       a['min_area'] = clamp_float(a['min_area'], 0.0, 100.0, 3.0)
-      a['max_facades'] = clamp_int(a['max_facades'], 1, 24, 8)
+      a['max_facades'] = clamp_int(a['max_facades'], 1, 8, 8)
       prefix = a['scene_prefix'].to_s.strip
       a['scene_prefix'] = 'Фасад' if prefix.empty?
     end
