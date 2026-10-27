@@ -60,7 +60,7 @@ module FacadeExport
     def build_payload(result, settings)
       {
         'scope' => result[:scope].to_s,
-        'plan' => result[:plan] || { 'grid' => AutoFacades::PLAN_GRID, 'cells' => [] },
+        'plan' => plan_payload(result[:plan]),
         'aspects' => Config::AUTO_ASPECTS.keys.map do |key|
           label = key == Config::AUTO_DEFAULT_ASPECT ? "#{key} (по умолчанию)" : key
           [key, label]
@@ -81,6 +81,16 @@ module FacadeExport
       }
     end
 
+    # Схема для окна: только то, что нужно рисовать (без мировых координат).
+    def plan_payload(plan)
+      plan = { 'grid' => AutoFacades::PLAN_GRID, 'cells' => [], 'polygons' => [] } if plan.nil?
+      {
+        'grid' => plan['grid'] || AutoFacades::PLAN_GRID,
+        'cells' => plan['cells'] || [],
+        'polygons' => plan['polygons'] || []
+      }
+    end
+
     def facade_payload(facade)
       {
         'index' => facade.index,
@@ -91,6 +101,8 @@ module FacadeExport
                      facade.page_name.to_s.split('—').last.to_s.strip,
         'aspect' => facade.aspect,
         'selected' => facade.selected ? true : false,
+        'drawn' => facade.drawn ? true : false,
+        'cut' => facade.cut ? true : false,
         'segment' => facade.segment
       }
     end
@@ -124,10 +136,52 @@ module FacadeExport
       facade.selected = true
       facade.name = "#{prefix} #{index}"
       facade.page_name = "#{prefix} #{index} — #{detector.compass(facade.normal)}"
-      facade.segment = detector.plan_segment(facade, detector.plan) if detector.plan
+      # Линия на схеме — ровно та, которую провёл пользователь (у нарисованного
+      # фасада она уже задана). Подменять её габаритами найденной стены нельзя:
+      # линия «прыгала» и укорачивалась.
+      if !facade.drawn && detector.plan
+        facade.segment = detector.plan_segment(facade, detector.plan)
+      end
       facades << facade
       @facades = facades
       respond_add(facade_payload(facade).merge('ok' => true))
+    end
+
+    # Окно просит развернуть фасад в другую сторону (оставаясь на месте).
+    def invert_facade(data)
+      payload = parse_payload(data)
+      detector = @detector
+      index = payload ? payload['index'].to_i : nil
+      if detector.nil? || index.nil?
+        return respond_add('ok' => false, 'message' => 'Окно устарело: нажмите кнопку заново.')
+      end
+      list = @facades || []
+      position = list.index { |facade| facade.index == index }
+      if position.nil?
+        return respond_add('ok' => false, 'message' => 'Фасад не найден.')
+      end
+      fresh = begin
+        detector.invert(list[position])
+      rescue StandardError => e
+        FacadeExport.log("Авто-фасады: фасад не развёрнут (#{e.message})")
+        nil
+      end
+      if fresh.nil?
+        return respond_add('ok' => false, 'message' => 'Не удалось развернуть фасад.')
+      end
+      list[position] = fresh
+      @facades = list
+      respond_update(facade_payload(fresh).merge('ok' => true))
+    end
+
+    # Ответ окну на разворот фасада: обновляем одну строку.
+    def respond_update(payload)
+      begin
+        Dialogs.push_auto_update(payload)
+      rescue StandardError => e
+        FacadeExport.log("Авто-фасады: обновление в окно не отправлено (#{e.message})")
+      end
+      payload
     end
 
     # Ответ окну на нарисованную линию: и успех, и отказ видны пользователю.

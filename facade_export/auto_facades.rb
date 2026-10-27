@@ -34,8 +34,10 @@ module FacadeExport
     MIN_DEPTH_TOL = 0.5
     MAX_DEPTH   = 24      # глубина обхода групп/компонентов
     PLAN_GRID   = 40      # сетка схемы сверху (40 × 40 клеток)
-    MAX_CANDIDATES = 24   # сколько стен вообще показывать в окне
+    MAX_CANDIDATES = 8    # больше восьми фасадов в окне не показываем
     PREVIEW_SCALE = 1000.0
+    PLAN_FACE_Z  = 0.7    # грань считается «вид сверху», если её нормаль вверх
+    MAX_PLAN_FACES = 400  # больше граней в контур не берём
 
     # Найденный фасад.
     #   normal    — наружу от фасада; direction — куда смотрит камера (= -normal);
@@ -45,7 +47,10 @@ module FacadeExport
     Facade = Struct.new(
       :index, :normal, :direction, :right, :records, :area, :depth, :aspect,
       :name, :page_name, :selected, :image_width, :image_height, :camera,
-      :section_plane, :page, :extents, :segment
+      :section_plane, :page, :extents, :segment,
+      # Фасад, нарисованный пользователем мышью на схеме: линия хранится
+      # ровно такой, какой её провели, и именно по ней ставится сечение.
+      :drawn, :line, :line_world, :cut
     )
 
     def initialize(model, settings = nil)
@@ -65,21 +70,20 @@ module FacadeExport
 
     # Быстрый поиск фасадов. Возвращает {:facades, :plan, :scope}.
     def detect
+      @plan_faces = []
       records = collect_faces
-      if records.empty?
+      # Даже если вертикальных стен нет, контур сверху уже собран — схему
+      # показать можно, а фасады пользователь нарисует мышью.
+      if records.empty? && (@plan_faces || []).empty?
         raise ExportError, 'Не найдено видимых граней. Выйдите из группы ' \
                            'или проверьте, что геометрия не скрыта.'
       end
       @records = records
       @depth_tol = depth_tolerance(records)
       @runs = cluster_faces(records)
-      if @runs.empty?
-        raise ExportError, 'Не найдено вертикальных поверхностей — фасады не обнаружены.'
-      end
-      facades = build_facades(candidates(@runs))
-      if facades.empty?
-        raise ExportError, 'Фасады не обнаружены. Проверьте ориентацию модели.'
-      end
+      # Ноль найденных фасадов — это нормальный результат: окно покажет
+      # только схему, и фасады можно нарисовать мышью.
+      facades = @runs.empty? ? [] : build_facades(candidates(@runs))
       @plan = plan_map(records)
       facades.each { |facade| facade.segment = plan_segment(facade, @plan) }
       { :facades => facades, :plan => @plan, :scope => @scope }
@@ -93,59 +97,228 @@ module FacadeExport
     def candidates(runs)
       max_area = runs.map { |run| run[:area] }.max
       min_share = @settings.auto_val('min_area').to_f / 100.0
+      limit = @settings.auto_val('max_facades').to_i
+      limit = MAX_CANDIDATES if limit <= 0
+      limit = [limit, MAX_CANDIDATES].min
       keep = runs.select { |run| run[:area] >= max_area * min_share }
-      keep = keep.sort_by { |run| -run[:area] }.first(MAX_CANDIDATES)
-      chosen = keep.first(@settings.auto_val('max_facades').to_i)
-      keep.sort_by { |run| azimuth([run[:nx], run[:ny]]) }.map do |run|
-        run[:selected] = chosen.any? { |item| item.equal?(run) }
+      # Лишние стены в окно не попадают вовсе: пользователь просил
+      # «штук восемь максимум, либо вообще ноль». Всё, что нужно сверх
+      # этого, рисуется мышью по схеме.
+      keep = trim_runs(keep, limit)
+      keep.sort_by { |run| azimuth([run[:nx], run[:ny]]) }.each do |run|
+        run[:selected] = true
         run
       end
     end
 
+    # Отбор «не больше limit» без потери целых сторон: сначала по одному
+    # самому большому участку на каждое направление, потом — по кругу
+    # следующие. Иначе два куска одной стены вытесняли бы целый фасад
+    # с другой стороны.
+    def trim_runs(runs, limit)
+      groups = {}
+      runs.each do |run|
+        key = [run[:nx].round(2), run[:ny].round(2)]
+        (groups[key] ||= []) << run
+      end
+      groups.each_value { |list| list.sort_by! { |run| -run[:area] } }
+      ordered = groups.keys.sort_by { |(nx, ny)| azimuth([nx, ny]) }
+      picked = []
+      round = 0
+      while picked.length < limit
+        added = false
+        ordered.each do |key|
+          list = groups[key]
+          next if round >= list.length
+          picked << list[round]
+          added = true
+          break if picked.length >= limit
+        end
+        break unless added
+        round += 1
+      end
+      picked
+    end
+
     # Фасад по нарисованной пользователем линии на схеме.
-    # Линия задаёт направление взгляда (нормаль к ней) и место сечения;
-    # берётся стена ближайшей к линии глубины с подходящим направлением.
-    # Возвращает фасад или nil.
-    def facade_from_line(x1, y1, x2, y2)
+    # Линия НЕ подгоняется под найденную стену и не укорачивается: как
+    # провели — по этой линии и режется/снимается фасад. Направление взгляда
+    # по умолчанию — наружу от здания (от центра схемы); если нужно наоборот,
+    # пользователь разворачивает фасад кнопкой «⇄».
+    def facade_from_line(x1, y1, x2, y2, invert = false)
       dx = x2.to_f - x1.to_f
       dy = y2.to_f - y1.to_f
       length = Math.sqrt(dx * dx + dy * dy)
       return nil if length < 1.0e-6
       mx = (x1.to_f + x2.to_f) / 2.0
       my = (y1.to_f + y2.to_f) / 2.0
-      ux = -dy / length
-      uy = dx / length
-      best = nil
-      [1.0, -1.0].each do |sign|
-        nx = ux * sign
-        ny = uy * sign
-        depth = mx * nx + my * ny
-        (@runs || []).each do |run|
-          dot = run[:nx] * nx + run[:ny] * ny
-          next if dot < COS_TOL
-          distance = (run[:depth] - depth).abs
-          # Стена должна быть рядом с линией: иначе линия «притянет» чужой фасад.
-          next if distance > line_tolerance
-          best = [run, distance] if best.nil? || distance < best[1]
-        end
-      end
-      return nil if best.nil?
-      build_facades([best[0]]).first
+      normal = drawn_normal(mx, my, -dy / length, dx / length)
+      normal = [-normal[0], -normal[1]] if invert
+      build_drawn_facade(x1.to_f, y1.to_f, x2.to_f, y2.to_f, normal)
     end
 
-    # Насколько далеко от нарисованной линии может стоять стена.
-    def line_tolerance
-      return @line_tolerance unless @line_tolerance.nil?
-      xs = []
-      ys = []
-      (@records || []).each do |record|
-        box = record[:plan]
-        next if box.nil?
-        xs << box[0] << box[2]
-        ys << box[1] << box[3]
+    # Направление взгляда для нарисованной линии: наружу от центра здания.
+    def drawn_normal(mx, my, ux, uy)
+      min_x = @plan && @plan[:min_x] ? @plan[:min_x] : 0.0
+      min_y = @plan && @plan[:min_y] ? @plan[:min_y] : 0.0
+      span = @plan && @plan[:span] ? @plan[:span] : 1.0
+      cx = min_x + span / 2.0
+      cy = min_y + span / 2.0
+      dot = (mx - cx) * ux + (my - cy) * uy
+      dot >= 0.0 ? [ux, uy] : [-ux, -uy]
+    end
+
+    def build_drawn_facade(x1, y1, x2, y2, normal)
+      right = [-normal[1], normal[0]]
+      u1 = x1 * right[0] + y1 * right[1]
+      u2 = x2 * right[0] + y2 * right[1]
+      u_min, u_max = [u1, u2].min, [u1, u2].max
+      depth = x1 * normal[0] + y1 * normal[1]
+      cut = line_crosses_building?(x1, y1, x2, y2)
+      facade = Facade.new
+      facade.drawn = true
+      facade.normal = Geom::Vector3d.new(normal[0], normal[1], 0.0)
+      facade.direction = Geom::Vector3d.new(-normal[0], -normal[1], 0.0)
+      facade.right = Geom::Vector3d.new(right[0], right[1], 0.0)
+      facade.depth = depth
+      facade.cut = cut
+      facade.line_world = [x1, y1, x2, y2]
+      facade.records = drawn_records(normal, depth, right, u_min, u_max, cut)
+      facade.extents = drawn_extents(facade, u_min, u_max)
+      height = (facade.extents[:v_max] - facade.extents[:v_min]).abs
+      facade.area = (u_max - u_min).abs * height
+      facade.selected = true
+      facade.aspect = @settings.auto_val('aspect').to_s
+      facade.segment = drawn_segment(x1, y1, x2, y2, normal)
+      facade
+    end
+
+    # Грани, которые вообще видны с выбранной стороны: смотрят на камеру
+    # и (если линия режет здание) лежат за секущей плоскостью.
+    def drawn_records(normal, depth, right, u_min, u_max, cut)
+      margin = (u_max - u_min).abs * 0.02 + 1.0
+      chosen = (@records || []).select do |record|
+        dot = record[:normal][0] * normal[0] + record[:normal][1] * normal[1]
+        next false if dot < COS_TOL
+        next false unless record_overlaps_u?(record, right, u_min - margin, u_max + margin)
+        if cut
+          box = record[:plan]
+          center_depth = (box[0] + box[2]) / 2.0 * normal[0] + (box[1] + box[3]) / 2.0 * normal[1]
+          next false if center_depth > depth
+        end
+        true
       end
-      diagonal = xs.empty? ? 0.0 : Math.sqrt((xs.max - xs.min)**2 + (ys.max - ys.min)**2)
-      @line_tolerance = [(diagonal * 0.2), 1.0].max
+      chosen
+    end
+
+    def record_overlaps_u?(record, right, from, to)
+      box = record[:plan]
+      return true if box.nil?
+      range = record_u_range(record, right)
+      return true if range.nil?
+      range[1] >= from && range[0] <= to
+    end
+
+    # Габариты нарисованного фасада: ширина — ровно по линии, высота —
+    # по видимым граням (а если их нет — по всему зданию).
+    def drawn_extents(facade, u_min, u_max)
+      source = facade.records.nil? || facade.records.empty? ? (@records || []) : facade.records
+      v_min = v_max = d_min = d_max = nil
+      source.each do |record|
+        transform = record[:transform]
+        record[:face].vertices.each do |vertex|
+          point = vertex.position
+          point = point.transform(transform) unless transform.nil?
+          d = point.x * facade.normal.x + point.y * facade.normal.y
+          v = point.z
+          v_min = v if v_min.nil? || v < v_min
+          v_max = v if v_max.nil? || v > v_max
+          d_min = d if d_min.nil? || d < d_min
+          d_max = d if d_max.nil? || d > d_max
+        end
+      end
+      v_min = 0.0 if v_min.nil?
+      v_max = 1.0 if v_max.nil? || v_max <= v_min
+      d_min = facade.depth if d_min.nil?
+      d_max = facade.depth if d_max.nil?
+      { :u_min => u_min, :u_max => u_max, :v_min => v_min, :v_max => v_max,
+        :d_min => d_min, :d_max => d_max }
+    end
+
+    # Отрезок на схеме — ровно та линия, которую провёл пользователь.
+    def drawn_segment(x1, y1, x2, y2, normal)
+      min_x = @plan[:min_x]
+      min_y = @plan[:min_y]
+      span = @plan[:span]
+      to_plan = lambda do |x, y|
+        [((x - min_x) / span * PREVIEW_SCALE).round(1),
+         (PREVIEW_SCALE - (y - min_y) / span * PREVIEW_SCALE).round(1)]
+      end
+      {
+        'from'   => to_plan.call(x1, y1),
+        'to'     => to_plan.call(x2, y2),
+        'normal' => [normal[0].round(4), -normal[1].round(4)],
+        'area'   => 0.0
+      }
+    end
+
+    # Пересекает ли линия контур здания: только тогда нужна секущая
+    # плоскость. Линия мимо здания — обычный фасад без сечения.
+    def line_crosses_building?(x1, y1, x2, y2)
+      steps = 24
+      (0..steps).each do |i|
+        t = i.to_f / steps
+        return true if plan_contains?(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t)
+      end
+      false
+    end
+
+    def plan_contains?(x, y)
+      polygons = @plan && @plan[:polygons_world] ? @plan[:polygons_world] : []
+      return true if polygons.any? { |polygon| point_in_polygon?(x, y, polygon) }
+      cells = @plan && @plan['cells'] ? @plan['cells'] : []
+      return false if cells.empty?
+      span = @plan[:span]
+      step = span / PLAN_GRID
+      ix = ((x - @plan[:min_x]) / step).floor
+      iy = PLAN_GRID - 1 - ((y - @plan[:min_y]) / step).floor
+      cells.include?([ix, iy])
+    end
+
+    # Развернуть фасад в другую сторону, оставив его на том же месте.
+    def invert(facade)
+      return nil if facade.nil?
+      if facade.drawn && facade.line_world
+        fresh = facade_from_line(*facade.line_world, true)
+        return nil if fresh.nil?
+        fresh.index = facade.index
+        fresh.name = facade.name
+        fresh.page_name = renamed_page(facade.page_name, fresh.normal)
+        fresh.aspect = facade.aspect
+        fresh.selected = facade.selected
+        return fresh
+      end
+      normal = facade.normal
+      facade.normal = Geom::Vector3d.new(-normal.x, -normal.y, 0.0)
+      facade.direction = Geom::Vector3d.new(normal.x, normal.y, 0.0)
+      facade.right = Geom::Vector3d.new(normal.y, -normal.x, 0.0)
+      facade.depth = -facade.depth
+      facade.extents = nil
+      facade.camera = nil
+      facade.section_plane = nil
+      if facade.segment
+        sign = facade.segment['normal']
+        facade.segment = facade.segment.merge('normal' => [-sign[0], -sign[1]])
+      end
+      facade.page_name = renamed_page(facade.page_name, facade.normal)
+      facade
+    end
+
+    # Имя сцены после разворота: «Фасад 3 — юг» → «Фасад 3 — север».
+    def renamed_page(page_name, normal)
+      text = page_name.to_s
+      head = text.include?('—') ? text.split('—').first.to_s.rstrip : text
+      "#{head} — #{compass(normal)}"
     end
 
     # Видимые грани контекста: только родные свойства (нормаль, площадь,
@@ -186,6 +359,9 @@ module FacadeExport
         next unless face_visible?(face)
         record = face_record(face, transform)
         out << record if record
+        # Контур сверху — это ровно то, что видно в виде сверху: грани,
+        # смотрящие вверх (крыша, перекрытия). Из них и складывается схема.
+        collect_plan_face(face, transform)
       end
       containers = entities.grep(Sketchup::Group) + entities.grep(Sketchup::ComponentInstance)
       containers.uniq.each do |instance|
@@ -463,55 +639,152 @@ module FacadeExport
 
     # --------------------------------------------------------- схема сверху
 
-    # «Жучок»: сетка занятых клеток. Каждая грань закрашивает клетки своих
-    # габаритов в плане — крыша даёт силуэт, стены — контур. Никаких деталей,
-    # балконов и проработки: схема должна читаться с одного взгляда.
+    # «Жучок»: контур здания сверху. Берутся грани, смотрящие вверх
+    # (крыша, перекрытия) — ровно то, что видно в виде сверху внутри открытой
+    # группы. Окно заливает их одним цветом без обводки, поэтому получается
+    # реальный силуэт здания, включая косые крылья и внутренний двор.
     def plan_map(records)
-      xs = []
-      ys = []
-      records.each do |record|
-        box = record[:plan]
-        next if box.nil?
-        xs << box[0] << box[2]
-        ys << box[1] << box[3]
+      boxes = records.map { |record| record[:plan] }.compact
+      xs = boxes.map { |box| [box[0], box[2]] }.flatten
+      ys = boxes.map { |box| [box[1], box[3]] }.flatten
+      # Если вертикальных стен не нашлось, габариты берём по самому контуру.
+      (@plan_faces || []).each do |face|
+        face[:points].each do |(x, y)|
+          xs << x
+          ys << y
+        end
       end
-      if xs.empty?
-        return { 'grid' => PLAN_GRID, 'cells' => [], :min_x => 0.0, :min_y => 0.0,
-                 :span => 1.0 }
+      min_x, min_y, span = plan_bounds_from(xs, ys)
+      if min_x.nil?
+        return { 'grid' => PLAN_GRID, 'cells' => [], 'polygons' => [],
+                 :polygons_world => [], :min_x => 0.0, :min_y => 0.0, :span => 1.0 }
       end
+      faces = plan_faces(min_x, min_y, span)
+      faces = boxes.map { |box| rectangle_points(box) } if faces.empty?
+      faces = faces.first(MAX_PLAN_FACES).map { |points| simplify_polygon(points, span) }
+      polygons = faces.map do |points|
+        points.map do |(x, y)|
+          [((x - min_x) / span * PREVIEW_SCALE).round(1),
+           (PREVIEW_SCALE - (y - min_y) / span * PREVIEW_SCALE).round(1)]
+        end
+      end
+      {
+        'grid' => PLAN_GRID,
+        'cells' => raster_cells(faces, min_x, min_y, span),
+        'polygons' => polygons,
+        :polygons_world => faces,
+        :min_x => min_x,
+        :min_y => min_y,
+        :span => span
+      }
+    end
+
+    def plan_bounds_from(xs, ys)
+      return [nil, nil, nil] if xs.empty? || ys.empty?
       min_x = xs.min
       min_y = ys.min
       span = [xs.max - min_x, ys.max - min_y, 1.0e-6].max
-      cells = {}
-      total = PLAN_GRID * PLAN_GRID
-      records.each do |record|
-        break if cells.length >= total
-        box = record[:plan]
-        next if box.nil?
-        ix0, ix1 = cell_range(box[0], box[2], min_x, span)
-        iy0, iy1 = cell_range(box[1], box[3], min_y, span)
-        (iy0..iy1).each do |iy|
-          (ix0..ix1).each { |ix| cells[[ix, iy]] = true }
-        end
-      end
-      # Ось Y в SVG смотрит вниз: переворачиваем, чтобы север был сверху.
-      list = cells.keys.map { |(ix, iy)| [ix, PLAN_GRID - 1 - iy] }
-      { 'grid' => PLAN_GRID, 'cells' => list,
-        :min_x => min_x, :min_y => min_y, :span => span }
+      [min_x, min_y, span]
     end
 
-    def cell_range(min_value, max_value, origin, span)
-      a = ((min_value - origin) / span * PLAN_GRID).floor
-      b = ((max_value - origin) / span * PLAN_GRID).ceil - 1
-      a = [[a, 0].max, PLAN_GRID - 1].min
-      b = [[b, 0].max, PLAN_GRID - 1].min
-      b = a if b < a
-      [a, b]
+    # Контуры граней «сверху» в мировых координатах, без мелочи.
+    def plan_faces(min_x, min_y, span)
+      faces = @plan_faces || []
+      return [] if faces.empty?
+      max_area = faces.map { |face| face[:area] }.max
+      limit = max_area * 0.002
+      faces.select { |face| face[:area] >= limit }.map { |face| face[:points] }
+    end
+
+    # Убираем точки на одной прямой: контур остаётся тем же, а в окно
+    # уходит в разы меньше данных (окно должно открываться мгновенно).
+    def simplify_polygon(points, span)
+      return points if points.length <= 3
+      tolerance = span * 1.0e-4
+      result = []
+      points.each_with_index do |point, i|
+        prev = result.last || points[(i - 1) % points.length]
+        nxt = points[(i + 1) % points.length]
+        area = ((point[0] - prev[0]) * (nxt[1] - prev[1]) -
+                (point[1] - prev[1]) * (nxt[0] - prev[0])).abs
+        result << point if area > tolerance
+      end
+      result.length >= 3 ? result : points
+    end
+
+    def rectangle_points(box)
+      [[box[0], box[1]], [box[2], box[1]], [box[2], box[3]], [box[0], box[3]]]
+    end
+
+    # Клетки схемы: центр клетки внутри контура. Нужны как запасной вариант
+    # для окна и для «попала ли линия в здание».
+    def raster_cells(faces, min_x, min_y, span)
+      step = span / PLAN_GRID
+      cells = []
+      PLAN_GRID.times do |iy|
+        cy = min_y + (iy + 0.5) * step
+        PLAN_GRID.times do |ix|
+          cx = min_x + (ix + 0.5) * step
+          inside = faces.any? { |points| point_in_polygon?(cx, cy, points) }
+          cells << [ix, PLAN_GRID - 1 - iy] if inside
+        end
+      end
+      cells
+    end
+
+    # Грань «сверху»: горизонтальная и смотрит вверх.
+    def collect_plan_face(face, transform)
+      normal = face.normal
+      return if normal.nil?
+      normal = normal.transform(transform) unless transform.nil?
+      return if normal.z < PLAN_FACE_Z
+      area = face.area.to_f
+      return if area <= 0.0
+      points = plan_loop(face, transform)
+      return if points.nil? || points.length < 3
+      @plan_faces << { :points => points, :area => area }
+    rescue StandardError => e
+      FacadeExport.log("Авто-фасады: грань плана пропущена (#{e.message})")
+      nil
+    end
+
+    # Контур грани в плане (X, Y), без повторов соседних точек.
+    def plan_loop(face, transform)
+      points = []
+      face.vertices.each do |vertex|
+        point = vertex.position
+        point = point.transform(transform) unless transform.nil?
+        x = point.x
+        y = point.y
+        last = points.last
+        next if last && (last[0] - x).abs < 1.0e-6 && (last[1] - y).abs < 1.0e-6
+        points << [x, y]
+      end
+      points.pop if points.length > 2 &&
+                    (points.first[0] - points.last[0]).abs < 1.0e-6 &&
+                    (points.first[1] - points.last[1]).abs < 1.0e-6
+      points
+    end
+
+    # Точка внутри многоугольника (алгоритм луча).
+    def point_in_polygon?(x, y, points)
+      inside = false
+      j = points.length - 1
+      points.each_with_index do |(xi, yi), i|
+        xj, yj = points[j]
+        if ((yi > y) != (yj > y)) &&
+           (x < (xj - xi) * (y - yi) / ((yj - yi).to_f) + xi)
+          inside = !inside
+        end
+        j = i
+      end
+      inside
     end
 
     # Линия фасада на схеме: отрезок вдоль стены + нормаль наружу.
     # Координаты — в тех же 0..1000, что и клетки.
     def plan_segment(facade, plan)
+      return facade.segment if facade.respond_to?(:drawn) && facade.drawn && facade.segment
       min_x = plan[:min_x]
       min_y = plan[:min_y]
       span = plan[:span]
@@ -702,6 +975,9 @@ module FacadeExport
     # откосы) остаются целыми. Секущая плоскость скрывает ту сторону, куда
     # смотрит её нормаль.
     def section_plane_data(facade)
+      # Нарисованный фасад: сечение — ровно по линии, и только если линия
+      # заходит в здание. Мимо здания — никакого сечения не нужно.
+      return drawn_plane_data(facade) if facade.respond_to?(:drawn) && facade.drawn
       extents = extents(facade)
       u_center = (extents[:u_min] + extents[:u_max]) / 2.0
       v_center = (extents[:v_min] + extents[:v_max]) / 2.0
@@ -720,6 +996,23 @@ module FacadeExport
       )
       plane_normal = Geom::Vector3d.new(-normal.x, -normal.y, 0.0)
       to_context(point, plane_normal)
+    end
+
+    # Плоскость по нарисованной линии: точка на линии, нормаль — на камеру,
+    # поэтому отрезается всё между камерой и линией, а срез виден как фасад.
+    def drawn_plane_data(facade)
+      return nil unless facade.cut
+      extents = extents(facade)
+      return nil if extents.nil? || extents[:u_min].nil?
+      u_center = (extents[:u_min] + extents[:u_max]) / 2.0
+      v_center = (extents[:v_min] + extents[:v_max]) / 2.0
+      point = Geom::Point3d.new(
+        facade.right.x * u_center + facade.normal.x * facade.depth,
+        facade.right.y * u_center + facade.normal.y * facade.depth,
+        v_center
+      )
+      vector = Geom::Vector3d.new(facade.normal.x, facade.normal.y, 0.0)
+      to_context(point, vector)
     end
 
     # Точка и вектор в координатах того контекста, где лежит плоскость.
@@ -753,6 +1046,8 @@ module FacadeExport
         snapshot_planes
         facades.each do |facade|
           point, normal = section_plane_data(facade)
+          # Нарисованный фасад мимо здания: сечения нет, кадр без подрезки.
+          next if point.nil? || normal.nil?
           plane = begin
             entities.add_section_plane(point, normal)
           rescue StandardError => e
@@ -785,6 +1080,10 @@ module FacadeExport
         rescue StandardError => e
           FacadeExport.log("Плоскость не активирована: #{e.message}")
         end
+      else
+        # У этого фасада сечения нет — значит, не должен резать ни один
+        # из наших разрезов (скрытая плоскость продолжает резать).
+        clear_active_planes
       end
       view = active_view
       return facade if view.nil? || facade.camera.nil?
@@ -1014,6 +1313,28 @@ module FacadeExport
         FacadeExport.log("Камера не возвращена: #{e.message}")
       end
       @camera_snapshot = nil
+    end
+
+    # Снять активность со всех наших разрезов (в каждом контексте — свой).
+    def clear_active_planes
+      owners = []
+      @planes.each do |plane|
+        next if plane.nil? || !plane_alive?(plane)
+        owners << begin
+          plane.parent
+        rescue StandardError
+          nil
+        end
+      end
+      owners.compact.uniq.each do |entities|
+        next unless entities.respond_to?(:active_section_plane=)
+        begin
+          entities.active_section_plane = nil
+        rescue StandardError => e
+          FacadeExport.log("Разрез не выключен: #{e.message}")
+        end
+      end
+      true
     end
 
     def hide_plane(plane, hidden)

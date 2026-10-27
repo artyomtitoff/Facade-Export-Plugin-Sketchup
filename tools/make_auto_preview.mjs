@@ -3,72 +3,84 @@
 //
 //   node tools/make_auto_preview.mjs
 //
-// Данные — как их отдаёт AutoExport.build_payload: одна схема здания сверху
-// («жучок») и по одной линии стены на каждый найденный фасад. Превью фасадов
-// нет: окно должно открываться мгновенно.
+// Данные — как их отдаёт AutoExport.build_payload: контур здания сверху
+// (грани, смотрящие вверх, залитые одним цветом) и по одной линии стены
+// на каждый найденный фасад. Превью фасадов нет: окно открывается мгновенно.
 
 import fs from "node:fs/promises";
 import path from "node:path";
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 
-// П-образное здание с внутренним двором: ровно тот случай, ради которого
-// делались внутренние фасады и секущие плоскости.
 const PLAN_GRID = 40;
-const CELL = 1000 / PLAN_GRID;
 
-// Крылья в координатах схемы (0..1000, ось Y смотрит вниз).
-const wings = [
-  { x0: 100, y0: 100, x1: 380, y1: 880 }, // левое крыло
-  { x0: 620, y0: 100, x1: 900, y1: 880 }, // правое крыло
-  { x0: 100, y0: 100, x1: 900, y1: 380 }  // верхнее крыло
+// Здание с косым крылом (как в реальном проекте заказчика): П-образный
+// контур, одна сторона под 45°, внутренний двор.
+const outline = [
+  [35, 830], [35, 470], [365, 140], [960, 140],
+  [960, 830], [800, 830], [800, 300], [530, 300],
+  [200, 630], [200, 830],
 ];
 
-function inWings(x, y) {
-  return wings.some((w) => x >= w.x0 && x <= w.x1 && y >= w.y0 && y <= w.y1);
+function insidePolygon(x, y, points) {
+  let inside = false;
+  let j = points.length - 1;
+  for (let i = 0; i < points.length; i++) {
+    const [xi, yi] = points[i];
+    const [xj, yj] = points[j];
+    if (((yi > y) !== (yj > y)) && (x < ((xj - xi) * (y - yi)) / (yj - yi) + xi)) {
+      inside = !inside;
+    }
+    j = i;
+  }
+  return inside;
 }
 
-// Клетки схемы: центр клетки попал в крыло — клетка занята. Двор пустой.
+// Клетки — запасной вариант для окна (и для «попала ли линия в здание»).
 const cells = [];
 for (let iy = 0; iy < PLAN_GRID; iy++) {
   for (let ix = 0; ix < PLAN_GRID; ix++) {
-    const cx = (ix + 0.5) * CELL;
-    const cy = (iy + 0.5) * CELL;
-    if (inWings(cx, cy)) cells.push([ix, iy]);
+    const cx = (ix + 0.5) * (1000 / PLAN_GRID);
+    const cy = (iy + 0.5) * (1000 / PLAN_GRID);
+    if (insidePolygon(cx, cy, outline)) cells.push([ix, iy]);
   }
 }
 
-const plan = { grid: PLAN_GRID, cells };
+// Стены контура: откуда-куда и куда смотрит фасад (наружу).
+const walls = [
+  { from: [35, 470], to: [35, 830], normal: [-1, 0], compass: "запад" },
+  { from: [35, 470], to: [365, 140], normal: [-0.7071, -0.7071], compass: "северо-запад" },
+  { from: [365, 140], to: [960, 140], normal: [0, -1], compass: "север" },
+  { from: [960, 140], to: [960, 830], normal: [1, 0], compass: "восток" },
+  { from: [800, 830], to: [960, 830], normal: [0, 1], compass: "юг" },
+  { from: [800, 300], to: [800, 830], normal: [-1, 0], compass: "двор" },
+  { from: [530, 300], to: [800, 300], normal: [0, 1], compass: "двор" },
+  { from: [200, 630], to: [530, 300], normal: [0.7071, 0.7071], compass: "двор" },
+];
 
-// Линии стен: { from, to, normal } в тех же координатах 0..1000, что и схема.
-// normal — наружу от стены (для схемы ось Y уже перевёрнута).
-const facades = [
-  { compass: "север", from: [100, 100], to: [900, 100], normal: [0, -1] },
-  { compass: "восток", from: [900, 100], to: [900, 880], normal: [1, 0] },
-  { compass: "юг", from: [620, 880], to: [900, 880], normal: [0, 1] },
-  { compass: "юг", from: [100, 880], to: [380, 880], normal: [0, 1] },
-  { compass: "запад", from: [100, 880], to: [100, 100], normal: [-1, 0] },
-  { compass: "двор", from: [380, 380], to: [380, 880], normal: [1, 0] },
-  { compass: "двор", from: [620, 880], to: [620, 380], normal: [-1, 0] },
-  { compass: "двор", from: [380, 380], to: [620, 380], normal: [0, 1] }
-].map((f, i) => ({
-  index: i + 1,
-  compass: f.compass,
-  name: "Фасад " + (i + 1),
-  pageName: "Фасад " + (i + 1) + " — " + f.compass,
-  aspect: "авто",
-  selected: true,
-  segment: {
-    from: f.from,
-    to: f.to,
-    normal: f.normal,
-    area: Math.round(Math.hypot(f.to[0] - f.from[0], f.to[1] - f.from[1]) * 3)
-  }
-}));
+const facades = walls.map((wall, i) => {
+  const length = Math.hypot(wall.to[0] - wall.from[0], wall.to[1] - wall.from[1]);
+  return {
+    index: i + 1,
+    compass: wall.compass,
+    name: "Фасад " + (i + 1),
+    pageName: "Фасад " + (i + 1) + " — " + wall.compass,
+    aspect: "авто",
+    selected: true,
+    drawn: false,
+    cut: true,
+    segment: {
+      from: wall.from,
+      to: wall.to,
+      normal: wall.normal,
+      area: Math.round(length * 3),
+    },
+  };
+});
 
 const payload = {
   scope: "context",
-  plan,
+  plan: { grid: PLAN_GRID, cells, polygons: [outline] },
   origin: { x: 0, y: 0 },
   span: 1000,
   scenePrefix: "Фасад",
@@ -80,14 +92,14 @@ const payload = {
     ["1:1", "1:1"],
     ["4:3", "4:3"],
     ["3:2", "3:2"],
-    ["16:9", "16:9"]
+    ["16:9", "16:9"],
   ],
   defaultAspect: "авто",
   longestSide: 9999,
   deleteScenes: true,
   cutSections: true,
   baseName: "Заречная",
-  facades
+  facades,
 };
 
 const html = await fs.readFile(path.join(root, "facade_export/html/auto.html"), "utf8");
