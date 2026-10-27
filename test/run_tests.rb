@@ -1678,8 +1678,8 @@ check('Имена сцен по сторонам света',
 # Камеры: 3:4 по умолчанию, единый масштаб, фасад прижат к низу кадра.
 detector.build_cameras!(facades)
 first = facades.first
-check('Кадр по умолчанию 3:4: 7499×9999',
-      [first.image_width, first.image_height] == [7499, 9999],
+check('Кадр по умолчанию — по пропорциям фасада: широкий 9999×7499',
+      [first.image_width, first.image_height] == [9999, 7499],
       [first.image_width, first.image_height].inspect)
 check('Камеры параллельные',
       facades.all? { |f| f.camera && f.camera.perspective? == false })
@@ -1838,12 +1838,12 @@ check('Нормаль плоскости смотрит в здание',
         n = f.section_plane.plane_normal
         (n.x * f.normal.x + n.y * f.normal.y + 1.0).abs < 1.0e-6
       end)
-check('Плоскость стоит за фасадом: фасад и его детали не отрезаются',
+check('Плоскость стоит вплотную к стене изнутри: фасад и балконы остаются',
       facades.all? do |f|
-        facade_d = detector.extents(f)[:d_min]
+        inner = detector.extents(f)[:d_min]
         plane = f.section_plane.point
         plane_d = plane.x * f.normal.x + plane.y * f.normal.y
-        plane_d < facade_d && (facade_d - plane_d) < 10.0
+        plane_d < inner && (inner - plane_d) < 10.0
       end,
       facades.map { |f| f.section_plane.point.to_a.map { |v| v.round(2) } }.inspect)
 check('Камера стоит снаружи фасада, а не внутри здания',
@@ -1981,7 +1981,7 @@ fresh_settings
 auto = FacadeExport.settings.auto
 check('По умолчанию сцены временные (удаляются)', auto['delete_scenes'] == true)
 check('По умолчанию сечение подрезает', auto['cut_sections'] == true)
-check('По умолчанию соотношение 3:4', auto['aspect'] == '3:4', auto['aspect'].inspect)
+check('По умолчанию соотношение «авто»', auto['aspect'] == 'авто', auto['aspect'].inspect)
 check('По умолчанию имя начинается с «Фасад»', auto['scene_prefix'] == 'Фасад')
 check('Вертикальное соотношение есть в списке',
       FacadeExport::Config::AUTO_ASPECTS.key?('3:4'))
@@ -1990,7 +1990,7 @@ FacadeExport.settings.replace!(
   'auto' => { 'aspect' => 'битое', 'min_area' => 500, 'max_facades' => 0, 'scene_prefix' => '  ' }
 )
 auto = FacadeExport.settings.auto
-check('Битое соотношение заменяется на 3:4', auto['aspect'] == '3:4', auto['aspect'].inspect)
+check('Битое соотношение заменяется на «авто»', auto['aspect'] == 'авто', auto['aspect'].inspect)
 check('min_area ограничен 100 %', auto['min_area'].to_f <= 100.0, auto['min_area'].inspect)
 check('max_facades не меньше 1', auto['max_facades'].to_i >= 1, auto['max_facades'].inspect)
 check('Пустое имя сцены заменяется на «Фасад»', auto['scene_prefix'] == 'Фасад')
@@ -2025,7 +2025,7 @@ check('У фасада в окне есть линия на схеме и нор
       payload['facades'].map { |f| f['segment'].inspect[0, 40] }.first(2).inspect)
 check('В данных окна нет превью фасадов',
       payload['facades'].none? { |f| f.key?('polygons') })
-check('Соотношение по умолчанию отдано окну', payload['defaultAspect'] == '3:4',
+check('Соотношение по умолчанию отдано окну', payload['defaultAspect'] == 'авто',
       payload['defaultAspect'].inspect)
 check('В списке соотношений есть 3:4 и 1:1',
       payload['aspects'].map(&:first).include?('3:4') &&
@@ -2052,8 +2052,102 @@ check('Имя фасада берётся из окна', chosen[0].name == 'С�
 check('Соотношение берётся из окна', chosen[0].aspect == '1:1', chosen[0].aspect)
 check('Пустое имя заменяется именем сцены', chosen[1].name == chosen[1].page_name,
       chosen[1].name)
-check('Битое соотношение заменяется на 3:4', chosen[1].aspect == '3:4', chosen[1].aspect)
+check('Битое соотношение заменяется на «авто»', chosen[1].aspect == 'авто', chosen[1].aspect)
 check('Несуществующий фасад игнорируется', chosen.none? { |f| f.index == 9 })
+
+section 'Автоматический вывод: разрывы стен, нарисованные линии, чужие разрезы'
+
+# Разрыв между объёмами: одинаковые направление и глубина, но это две стены.
+fresh_settings
+model = new_model
+model.entities.clear
+add_box_faces(model.entities, 400, 300, 600, 0, 0, 0)
+add_box_faces(model.entities, 400, 300, 600, 800, 0, 0)
+south = FacadeExport::AutoFacades.new(model, FacadeExport.settings).detect[:facades].
+        select { |f| (f.normal.y + 1.0).abs < 0.01 }
+check('Разрыв между объёмами — две отдельные стены, а не одна', south.length == 2,
+      south.map(&:index).inspect)
+check('У каждой стены своя площадь, а не общая', south.map { |f| f.area.round }.sort == [240_000, 240_000],
+      south.map { |f| f.area.round }.inspect)
+segments = south.map do |f|
+  seg = f.segment
+  Math.sqrt((seg['to'][0] - seg['from'][0])**2 + (seg['to'][1] - seg['from'][1])**2).round
+end
+check('Линия на схеме — только своя стена, без пустоты', segments.all? { |len| (len - 333).abs < 30 },
+      segments.inspect)
+
+# Линия, нарисованная мышью, притягивается к ближайшей стене.
+fresh_settings
+model = box_facade_model
+draw = FacadeExport::AutoFacades.new(model, FacadeExport.settings)
+draw.detect
+drawn = draw.facade_from_line(-200.0, -200.0, 1400.0, -200.0)
+check('Линия вдоль стены находит фасад', !drawn.nil?)
+check('Линия снаружи даёт южный фасад',
+      drawn && (drawn.normal.y + 1.0).abs < 0.01,
+      drawn && [drawn.normal.x.round(2), drawn.normal.y.round(2)].inspect)
+check('Нарисованный фасад — во всю стену', drawn && drawn.area > 500_000,
+      drawn && drawn.area.round)
+check('Линия вдали от здания фасад не создаёт',
+      draw.facade_from_line(-3000.0, -3000.0, -3000.0, 3000.0).nil?)
+check('Линия нулевой длины игнорируется', draw.facade_from_line(0.0, 0.0, 0.0, 0.0).nil?)
+
+# Новый фасад по нарисованной линии: номер, имя, линия на схеме, окно.
+fresh_settings
+model = box_facade_model
+UI.messages = []
+FacadeExport::AutoExport.start
+added = FacadeExport::AutoExport.add_facade(
+  'x1' => -200.0, 'y1' => -200.0, 'x2' => 1400.0, 'y2' => -200.0
+)
+check('Нарисованная линия добавляет фасад', added['ok'] == true, added.inspect[0, 120])
+check('Новый фасад получает следующий номер', added['index'] == 5, added['index'].inspect)
+check('У нового фасада есть линия на схеме',
+      added['segment'] && added['segment']['from'].length == 2 && added['segment']['normal'].length == 2)
+check('Новый фасад сразу отмечен для экспорта', added['selected'] == true)
+check('Новое имя — по шаблону «Фасад N»', added['name'].to_s.start_with?('Фасад '), added['name'].inspect)
+dialog = FacadeExport::Dialogs.instance_variable_get(:@auto_dialog)
+script = dialog && dialog.scripts.last
+check('Окно получает добавленный фасад', script.to_s.include?('addFacade'), script.to_s[0, 60])
+rejected = FacadeExport::AutoExport.add_facade(
+  'x1' => -3000.0, 'y1' => -3000.0, 'x2' => -3000.0, 'y2' => 3000.0
+)
+check('Отказ тоже возвращается в окно с подсказкой',
+      rejected['ok'] == false && !rejected['message'].to_s.empty?, rejected.inspect[0, 120])
+
+# Чужие секущие плоскости не должны резать модель во время съёмки.
+fresh_settings
+model = box_facade_model
+user_plane = Sketchup::SectionPlane.new(true)
+model.entities.add(user_plane)
+check('Чужой разрез активен до вывода',
+      model.entities.active_section_plane.equal?(user_plane))
+detector = FacadeExport::AutoFacades.new(model, FacadeExport.settings)
+facades = detector.detect[:facades]
+check('На время вывода чужой разрез выключен',
+      detector.suspend_foreign_planes == 1 && model.entities.active_section_plane.nil?,
+      model.entities.active_section_plane.inspect)
+detector.build_cameras!(facades)
+detector.create_planes!(facades)
+detector.activate(facades.first)
+check('Режет только плоскость своего фасада',
+      model.entities.active_section_plane.equal?(facades.first.section_plane))
+detector.cleanup!(false)
+check('После уборки чужой разрез снова активен',
+      model.entities.active_section_plane.equal?(user_plane),
+      model.entities.active_section_plane.inspect)
+
+# Пропорции кадра: высокий фасад — вертикальный, широкий — горизонтальный.
+fresh_settings
+model = new_model
+model.entities.clear
+add_box_faces(model.entities, 400, 400, 2000)
+tall_detector = FacadeExport::AutoFacades.new(model, FacadeExport.settings)
+tall_facades = tall_detector.detect[:facades]
+tall_detector.build_cameras!(tall_facades)
+check('Высокий фасад — вертикальный кадр 3:4',
+      tall_facades.all? { |f| [f.image_width, f.image_height] == [7499, 9999] },
+      tall_facades.map { |f| [f.image_width, f.image_height] }.uniq.inspect)
 
 section 'Автоматический вывод: папка раньше камер, отчёт всегда'
 

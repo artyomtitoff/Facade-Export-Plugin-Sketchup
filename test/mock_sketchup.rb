@@ -395,6 +395,8 @@ module Sketchup
     end
 
     def add(entity)
+      # Как в SketchUp: секущая плоскость помнит свой контекст.
+      entity.owner = self if entity.is_a?(Sketchup::SectionPlane) && entity.respond_to?(:owner=)
       @list << entity
       self
     end
@@ -418,6 +420,19 @@ module Sketchup
       plane = Sketchup::SectionPlane.new(true, point, normal)
       plane.owner = self
       @list << plane
+      plane
+    end
+
+    # В каждом контексте активна только одна плоскость сечения.
+    def active_section_plane
+      @list.find { |e| e.is_a?(Sketchup::SectionPlane) && e.active? }
+    end
+
+    def active_section_plane=(plane)
+      @list.each do |e|
+        next unless e.is_a?(Sketchup::SectionPlane)
+        e.active = (e.equal?(plane))
+      end
       plane
     end
   end
@@ -477,6 +492,11 @@ module Sketchup
 
     def valid?
       !@erased
+    end
+
+    # Как в SketchUp: контекст, в котором лежит плоскость.
+    def parent
+      @owner
     end
   end
 
@@ -1176,9 +1196,12 @@ module UI
     # Колбэки доступны тестам: так проверяется, что окно действительно
     # отдаёт данные в Ruby и что ошибки в колбэке не пропадают молча.
     attr_reader :callbacks
+    # Скрипты, отправленные в окно: по ним видно, что Ruby обновил окно.
+    attr_reader :scripts
 
     def initialize(_options = {})
       @callbacks = {}
+      @scripts = []
     end
 
     def add_action_callback(name, &block)
@@ -1191,7 +1214,10 @@ module UI
     def close; true; end
     def visible?; false; end
     def bring_to_front; true; end
-    def execute_script(_script); true; end
+    def execute_script(script)
+      @scripts << script.to_s
+      true
+    end
   end
 
   class << self

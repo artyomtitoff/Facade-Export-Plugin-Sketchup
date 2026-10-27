@@ -49,9 +49,11 @@ module FacadeExport
 
     DEFAULT_ASPECT = '4:3'.freeze
 
-    # Соотношения для автоматического вывода фасада: здесь нужны и
-    # вертикальные варианты (по умолчанию 3:4 — фасад «стоит»).
+    # Соотношения для автоматического вывода фасада. «авто» (по умолчанию) —
+    # кадр по пропорциям самого фасада: широкий фасад горизонтальный, высокий
+    # вертикальный. Остальные варианты можно выбрать вручную.
     AUTO_ASPECTS = {
+      'авто' => nil,
       '3:4'  => [3, 4],
       '2:3'  => [2, 3],
       '9:16' => [9, 16],
@@ -61,7 +63,7 @@ module FacadeExport
       '16:9' => [16, 9]
     }.freeze
 
-    AUTO_DEFAULT_ASPECT = '3:4'.freeze
+    AUTO_DEFAULT_ASPECT = 'авто'.freeze
 
     # Пределы стороны изображения (ограничение SketchUp — 16000).
     MAX_IMAGE_SIDE = 16_000
@@ -94,7 +96,9 @@ module FacadeExport
 
     # Соотношение для автоматических фасадов (включая вертикальные).
     def self.auto_aspect_ratio(name)
-      AUTO_ASPECTS[name.to_s] || AUTO_ASPECTS[AUTO_DEFAULT_ASPECT]
+      ratio = AUTO_ASPECTS[name.to_s]
+      return ratio unless ratio.nil?
+      AUTO_ASPECTS[AUTO_DEFAULT_ASPECT]
     end
 
     # ---------------------------------------------------------------- defaults

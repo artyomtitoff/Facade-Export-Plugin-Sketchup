@@ -54,6 +54,8 @@ const payload = {
     ["3:2", "3:2"],
     ["16:9", "16:9"],
   ],
+  origin: { x: 0, y: 0 },
+  span: 1000,
   defaultAspect: "3:4",
   longestSide: 9999,
   deleteScenes: true,
@@ -87,7 +89,7 @@ const html = await fs.readFile(path.join(root, "facade_export/html/auto.html"), 
 const dom = new JSDOM(html, { runScripts: "dangerously", pretendToBeVisual: true });
 const { window } = dom;
 
-const calls = { ready: 0, exported: null, canceled: 0 };
+const calls = { ready: 0, exported: null, canceled: 0, drawn: null };
 
 window.sketchup = {
   ready() {
@@ -96,6 +98,9 @@ window.sketchup = {
   },
   export(json) {
     calls.exported = json;
+  },
+  add_facade(json) {
+    calls.drawn = JSON.parse(json);
   },
   cancel() {
     calls.canceled += 1;
@@ -128,7 +133,7 @@ check("В шапке нет пустого текста", !doc.getElementById("s
 
 const rects = doc.querySelectorAll("#canvas svg rect");
 check("Схема нарисована клетками контура", rects.length === payload.plan.cells.length + 1,
-  [rects.length, payload.plan.cells.length].inspect ?? `${rects.length} / ${payload.plan.cells.length}`);
+  `${rects.length} / ${payload.plan.cells.length}`);
 const courtyardFilled = [...rects].some((r) => {
   const x = Number(r.getAttribute("x"));
   const y = Number(r.getAttribute("y"));
@@ -214,6 +219,37 @@ check("Соотношение сторон передано", sent.facades[1].as
 check("Индексы фасадов сохранены",
   sent.facades.map((f) => f.index).join(",") === "1,2,3,4",
   sent.facades.map((f) => f.index).join(","));
+
+// Рисование мышью: линия притягивается к стене и уходит в Ruby.
+const debug = window.FacadeExportAuto._debug;
+check("Контур: точка внутри здания определяется", debug.insideBuilding(200, 200) === true);
+check("Контур: двор пустой", debug.insideBuilding(500, 620) === false);
+check("Схема переводится в координаты модели",
+  debug.toWorld([380, 630]).join(",") === "380,370",
+  debug.toWorld([380, 630]).join(","));
+window.FacadeExportAuto._draw(200, 620, 800, 620);
+check("Нарисованная линия ушла в Ruby", calls.drawn !== null, JSON.stringify(calls.drawn));
+check("Линия передана в координатах модели",
+  calls.drawn && Math.round(calls.drawn.x1) === 200 && Math.round(calls.drawn.x2) === 800 &&
+  Math.round(calls.drawn.y1) === 380 && Math.round(calls.drawn.y2) === 380,
+  JSON.stringify(calls.drawn));
+// Линия через всё здание: снаружи красная, в пределах контура — синяя.
+const marks = debug.dragMarks([-60, 200, 1060, 200]);
+check("Часть линии внутри здания — синяя (сечение)",
+  (marks.match(/stroke="#1f6feb"/g) || []).length === 1,
+  marks);
+check("Участки линии вне здания — красные",
+  (marks.match(/stroke="#e03131"/g) || []).length === 2, marks);
+
+// Ruby вернул новый фасад: строка появляется, номер продолжает список.
+window.FacadeExportAuto.addFacade(JSON.stringify({
+  ok: true, index: 5, name: "Фасад 5", aspect: "авто", selected: true,
+  segment: { from: [120, 150], to: [120, 880], normal: [-1, 0], area: 610 },
+}));
+check("Добавленный фасад появился в списке", rows().length === 5, rows().length);
+check("Добавленный фасад появился на схеме", badges().length === 5, badges().length);
+window.FacadeExportAuto.addFacade(JSON.stringify({ ok: false, message: "Здесь стена не найдена" }));
+check("Отказ показан пользователю", footnote().includes("стена не найдена"), footnote());
 
 fire(doc.getElementById("btn-cancel"), "click");
 check("По «Отмена» вызван Ruby-callback", calls.canceled === 1);

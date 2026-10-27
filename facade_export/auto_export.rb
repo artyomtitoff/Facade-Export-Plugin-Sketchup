@@ -66,6 +66,13 @@ module FacadeExport
           [key, label]
         end,
         'defaultAspect' => settings.auto_val('aspect').to_s,
+        'scenePrefix' => settings.auto_val('scene_prefix').to_s,
+        # Чтобы окно могло вернуть координаты нарисованной линии в модель.
+        'origin' => {
+          'x' => (result[:plan] && result[:plan][:min_x]).to_f,
+          'y' => (result[:plan] && result[:plan][:min_y]).to_f
+        },
+        'span' => (result[:plan] && result[:plan][:span]).to_f,
         'longestSide' => settings.exp('width').to_i,
         'deleteScenes' => settings.auto_val('delete_scenes') ? true : false,
         'cutSections' => settings.auto_val('cut_sections') ? true : false,
@@ -79,11 +86,58 @@ module FacadeExport
         'index' => facade.index,
         'name' => facade.name,
         'pageName' => facade.page_name,
-        'compass' => facade.page_name.to_s.split('—').last.to_s.strip,
+        'compass' => @detector && @detector.respond_to?(:compass) ?
+                     @detector.compass(facade.normal) :
+                     facade.page_name.to_s.split('—').last.to_s.strip,
         'aspect' => facade.aspect,
         'selected' => facade.selected ? true : false,
         'segment' => facade.segment
       }
+    end
+
+    # Окно прислало линию, нарисованную пользователем на схеме.
+    # Возвращает описание нового фасада и передаёт его обратно в окно.
+    def add_facade(data)
+      detector = @detector
+      facades = @facades || []
+      if detector.nil?
+        return respond_add('ok' => false, 'message' => 'Окно устарело: нажмите кнопку заново.')
+      end
+      point = parse_payload(data)
+      if point.nil?
+        return respond_add('ok' => false, 'message' => 'Линия не прочитана.')
+      end
+      facade = nil
+      begin
+        facade = detector.facade_from_line(point['x1'], point['y1'], point['x2'], point['y2'])
+      rescue StandardError => e
+        FacadeExport.log("Авто-фасады: линия не разобрана (#{e.message})")
+      end
+      if facade.nil?
+        return respond_add('ok' => false,
+                           'message' => 'Здесь стена не найдена — проведите линию вдоль фасада.')
+      end
+      prefix = (FacadeExport.settings.auto_val('scene_prefix') || 'Фасад').to_s.strip
+      prefix = 'Фасад' if prefix.empty?
+      index = (facades.map(&:index).max || 0).to_i + 1
+      facade.index = index
+      facade.selected = true
+      facade.name = "#{prefix} #{index}"
+      facade.page_name = "#{prefix} #{index} — #{detector.compass(facade.normal)}"
+      facade.segment = detector.plan_segment(facade, detector.plan) if detector.plan
+      facades << facade
+      @facades = facades
+      respond_add(facade_payload(facade).merge('ok' => true))
+    end
+
+    # Ответ окну на нарисованную линию: и успех, и отказ видны пользователю.
+    def respond_add(payload)
+      begin
+        Dialogs.push_auto_add(payload)
+      rescue StandardError => e
+        FacadeExport.log("Авто-фасады: ответ в окно не отправлен (#{e.message})")
+      end
+      payload
     end
 
     # Вызывается из окна: пользователь нажал «Экспортировать».
@@ -140,6 +194,9 @@ module FacadeExport
       result = nil
       error = nil
       begin
+        # Чужие разрезы (пользователя и старых сцен) на время съёмки выключаем:
+        # иначе они режут модель вместе с нашим сечением.
+        detector.suspend_foreign_planes
         with_operation(model, 'Автоматический вывод фасада') do
           detector.create_planes!(facades)
         end
@@ -170,6 +227,7 @@ module FacadeExport
         with_operation(model, 'Уборка автоматического вывода') do
           detector.cleanup!(keep_scenes && result && !result.files.empty?)
         end
+        detector.resume_foreign_planes
         detector.restore_camera(view)
         view.invalidate if view.respond_to?(:invalidate)
         close_dialog

@@ -209,6 +209,16 @@ module FacadeExport
         end
       end
 
+      # Пользователь нарисовал линию на схеме — просим Ruby найти фасад.
+      dialog.add_action_callback('add_facade') do |_context, data|
+        begin
+          AutoExport.add_facade(data)
+        rescue StandardError => e
+          FacadeExport.log("Авто-фасады: линия не добавлена (#{e.message})")
+          UI.messagebox("Не удалось добавить фасад: #{e.message}")
+        end
+      end
+
       dialog.add_action_callback('cancel') do |_context, _data|
         dialog.close
       end
@@ -221,6 +231,15 @@ module FacadeExport
       end
       dialog.show
       @auto_dialog = dialog
+    end
+
+    # Точечное обновление окна: добавился один фасад.
+    def push_auto_add(payload)
+      return unless @auto_dialog
+      json = JSON.generate(payload)
+      @auto_dialog.execute_script("FacadeExportAuto.addFacade(#{JSON.generate(json)});")
+    rescue StandardError => e
+      FacadeExport.log("Не удалось передать фасад в окно: #{e.message}")
     end
 
     def push_auto_data(dialog, payload)

@@ -39,7 +39,7 @@ const defaults = {
   },
   auto: {
     delete_scenes: true, cut_sections: true, create_scenes: true,
-    aspect: "3:4", min_area: 3, max_facades: 8, scene_prefix: "Фасад",
+    aspect: "авто", min_area: 3, max_facades: 8, scene_prefix: "Фасад",
   },
   maps: [
     {
@@ -108,14 +108,14 @@ check("Есть кнопка «+» для своей карты", !!q("nav butto
 
 const autoTab = q("#tab-auto");
 check("Авто: вкладка есть", !!autoTab);
-check("Авто: соотношение по умолчанию 3:4", byPath("auto.aspect")?.value === "3:4",
+check("Авто: соотношение по умолчанию «авто»", byPath("auto.aspect")?.value === "авто",
   byPath("auto.aspect")?.value);
 const autoAspects = [...byPath("auto.aspect").querySelectorAll("option")].map((o) => o.value);
 check("Авто: в списке есть вертикальные соотношения",
   ["3:4", "2:3", "9:16"].every((v) => autoAspects.includes(v)), autoAspects.join(", "));
-check("Авто: 3:4 подписано как значение по умолчанию",
+check("Авто: «авто» подписано как значение по умолчанию",
   [...byPath("auto.aspect").querySelectorAll("option")]
-    .some((o) => o.value === "3:4" && o.textContent.includes("по умолчанию")));
+    .some((o) => o.value === "авто" && o.textContent.includes("по умолчанию")));
 check("Авто: сцены создаются по умолчанию", byPath("auto.create_scenes")?.checked === true);
 check("Авто: сцены удаляются после экспорта по умолчанию",
   byPath("auto.delete_scenes")?.checked === true);
@@ -397,7 +397,7 @@ check("Своя карта: перекраска стекла и цвет сох
   saved?.maps?.[4]?.glass_highlight === true && saved?.maps?.[4]?.tinted_h === 210,
   `${saved?.maps?.[4]?.glass_highlight} / ${saved?.maps?.[4]?.tinted_h}`);
 check("Своя карта: текстуры выключены для каркаса", saved?.maps?.[4]?.textures === false);
-check("Авто: настройки сохраняются", saved?.auto?.aspect === "3:4" &&
+check("Авто: настройки сохраняются", saved?.auto?.aspect === "авто" &&
   saved?.auto?.delete_scenes === true && saved?.auto?.min_area === 3,
   JSON.stringify(saved?.auto));
 

@@ -56,7 +56,7 @@ const facades = [
   compass: f.compass,
   name: "Фасад " + (i + 1),
   pageName: "Фасад " + (i + 1) + " — " + f.compass,
-  aspect: "3:4",
+  aspect: "авто",
   selected: true,
   segment: {
     from: f.from,
@@ -69,8 +69,12 @@ const facades = [
 const payload = {
   scope: "context",
   plan,
+  origin: { x: 0, y: 0 },
+  span: 1000,
+  scenePrefix: "Фасад",
   aspects: [
-    ["3:4", "3:4 (по умолчанию)"],
+    ["авто", "авто — по пропорциям фасада (по умолчанию)"],
+    ["3:4", "3:4"],
     ["2:3", "2:3"],
     ["9:16", "9:16"],
     ["1:1", "1:1"],
@@ -78,7 +82,7 @@ const payload = {
     ["3:2", "3:2"],
     ["16:9", "16:9"]
   ],
-  defaultAspect: "3:4",
+  defaultAspect: "авто",
   longestSide: 9999,
   deleteScenes: true,
   cutSections: true,
