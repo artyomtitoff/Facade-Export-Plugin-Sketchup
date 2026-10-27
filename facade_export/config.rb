@@ -49,21 +49,37 @@ module FacadeExport
 
     DEFAULT_ASPECT = '4:3'.freeze
 
-    # Соотношения для автоматического вывода фасада. «авто» (по умолчанию) —
-    # кадр по пропорциям самого фасада: широкий фасад горизонтальный, высокий
-    # вертикальный. Остальные варианты можно выбрать вручную.
-    AUTO_ASPECTS = {
-      'авто' => nil,
+    # Ориентация кадра: выбирается первой, а уже потом пропорции.
+    AUTO_ORIENTS = {
+      'h'  => 'горизонтальное',
+      'v'  => 'вертикальное',
+      'sq' => 'квадрат'
+    }.freeze
+
+    # Пропорции кадра для авто-вывода: те же, что в настройках экспорта,
+    # плюс вертикальные варианты. Значение — [длинная сторона, короткая].
+    AUTO_RATIOS = {
+      '4:3'  => [4, 3],
+      '3:2'  => [3, 2],
+      '16:9' => [16, 9],
+      '2:1'  => [2, 1],
+      '3:1'  => [3, 1],
+      '1:1'  => [1, 1],
       '3:4'  => [3, 4],
       '2:3'  => [2, 3],
       '9:16' => [9, 16],
-      '1:1'  => [1, 1],
-      '4:3'  => [4, 3],
-      '3:2'  => [3, 2],
-      '16:9' => [16, 9]
+      '1:2'  => [1, 2],
+      '1:3'  => [1, 3]
     }.freeze
 
-    AUTO_DEFAULT_ASPECT = 'авто'.freeze
+    # «авто» — по пропорциям самой геометрии фасада.
+    AUTO_RATIO_AUTO = 'авто'.freeze
+
+    AUTO_DEFAULT_ORIENT = 'h'.freeze
+    AUTO_DEFAULT_RATIO  = '3:4'.freeze
+
+    # Сколько фасадов разрешено нарисовать в одном контексте.
+    MAX_AUTO_FACADES = 30
 
     # Пределы стороны изображения (ограничение SketchUp — 16000).
     MAX_IMAGE_SIDE = 16_000
@@ -94,11 +110,21 @@ module FacadeExport
       ASPECTS[name.to_s] || ASPECTS[DEFAULT_ASPECT]
     end
 
-    # Соотношение для автоматических фасадов (включая вертикальные).
-    def self.auto_aspect_ratio(name)
-      ratio = AUTO_ASPECTS[name.to_s]
-      return ratio unless ratio.nil?
-      AUTO_ASPECTS[AUTO_DEFAULT_ASPECT]
+    # Пропорции авто-фасада: [длинная, короткая]. «авто» — nil, тогда
+    # кадр считается по самой геометрии фасада.
+    def self.auto_ratio(name)
+      AUTO_RATIOS[name.to_s]
+    end
+
+    def self.auto_orient(name)
+      key = name.to_s
+      AUTO_ORIENTS.key?(key) ? key : AUTO_DEFAULT_ORIENT
+    end
+
+    def self.auto_ratio_name(name)
+      key = name.to_s
+      return AUTO_RATIO_AUTO if key == AUTO_RATIO_AUTO
+      AUTO_RATIOS.key?(key) ? key : AUTO_DEFAULT_RATIO
     end
 
     # ---------------------------------------------------------------- defaults
@@ -151,12 +177,11 @@ module FacadeExport
         # Секущая плоскость параллельно фасаду — убирает лишнюю геометрию
         # (внутренние дворы, соседние крылья) из каждого кадра.
         'cut_sections'    => true,
-        # Соотношение сторон по умолчанию для каждого найденного фасада.
-        'aspect'          => AUTO_DEFAULT_ASPECT,
-        # Минимальная площадь фасада в процентах от самого большого.
-        'min_area'        => 3,
-        # Сколько фасадов максимум показывать в списке.
-        'max_facades'     => 8,
+        # Кадр по умолчанию для новых фасадов: горизонтальный, 3:4.
+        'orient'          => AUTO_DEFAULT_ORIENT,
+        'ratio'           => AUTO_DEFAULT_RATIO,
+        # Сколько фасадов разрешено нарисовать.
+        'max_facades'     => MAX_AUTO_FACADES,
         # Имя сцены: «Фасад 1 — Север».
         'scene_prefix'    => 'Фасад',
         # Создавать сцены перед экспортом.
@@ -431,9 +456,12 @@ module FacadeExport
         return
       end
       %w[delete_scenes cut_sections create_scenes].each { |key| a[key] = truthy(a[key]) }
-      a['aspect'] = Config::AUTO_DEFAULT_ASPECT unless Config::AUTO_ASPECTS.key?(a['aspect'].to_s)
-      a['min_area'] = clamp_float(a['min_area'], 0.0, 100.0, 3.0)
-      a['max_facades'] = clamp_int(a['max_facades'], 1, 8, 8)
+      a['orient'] = Config.auto_orient(a['orient'])
+      a['ratio'] = Config.auto_ratio_name(a['ratio'])
+      a.delete('aspect')
+      a.delete('min_area')
+      a['max_facades'] = clamp_int(a['max_facades'], 1, Config::MAX_AUTO_FACADES,
+                                   Config::MAX_AUTO_FACADES)
       prefix = a['scene_prefix'].to_s.strip
       a['scene_prefix'] = 'Фасад' if prefix.empty?
     end

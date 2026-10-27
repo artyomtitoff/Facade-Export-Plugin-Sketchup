@@ -2,23 +2,28 @@
 # Экспорт фасадов — сценарий «Автоматический вывод фасада».
 # Автор: Артем Титов (motivate_rt)
 #
-# Кнопка находит фасады в открытой группе (или во всей модели), показывает
-# окно со схемой здания сверху, а затем прогоняет обычный экспорт — по одной
-# камере и одной секущей плоскости на фасад.
+# Кнопка открывает окно со схемой здания сверху. Готовых фасадов плагин
+# больше не предлагает: пользователь сам рисует линии на схеме мышью.
+# Нарисованные фасады (со всеми настройками — имя, ориентация, пропорции,
+# направление) сохраняются в атрибутах модели и привязываются к контексту
+# (группе), поэтому:
+#   * повторное нажатие кнопки показывает уже нарисованные фасады;
+#   * другой пользователь с этим плагином увидит их же, открыв файл;
+#   * файл модели вырастает на считанные килобайты (одна строка JSON),
+#     время сохранения не меняется.
 #
 # Порядок важен для скорости и для надёжности:
 #   1. после кнопки — только быстрый анализ и окно (без превью фасадов);
-#   2. пользователь отмечает фасады, жмёт «Экспортировать»;
+#   2. пользователь рисует/двигает фасады, жмёт «Экспортировать»;
 #   3. ПЕРВЫМ делом — окно сохранения (оно не ждёт никаких расчётов);
 #   4. камеры, плоскости и съёмка — уже после выбора папки;
 #   5. окно с отчётом появляется всегда, даже если что-то упало.
-#
-# Сцены по умолчанию не создаются: пока они временные, они не нужны.
-# Если в настройках включено «оставлять сцены», они создаются ПОСЛЕ того,
-# как файлы записаны, — сбой со сценами уже не может испортить результат.
 
 module FacadeExport
   module AutoExport
+    DICT_NAME = 'FacadeExport'.freeze
+    DICT_KEY  = 'auto_facades'.freeze
+
     module_function
 
     # Нажатие кнопки: быстрый анализ модели и окно со схемой.
@@ -47,27 +52,28 @@ module FacadeExport
       end
 
       @detector = detector
-      @facades = result[:facades]
-      @payload = build_payload(result, settings)
-      FacadeExport.log("Авто-фасады: найдено #{@facades.length} фасадов " \
+      @result = result
+      @facades = detector.restore(load_drawn)
+      @payload = build_payload(result, settings, @facades)
+      FacadeExport.log("Авто-фасады: нарисовано фасадов — #{@facades.length} " \
                        "(#{result[:scope] == :context ? 'открытая группа' : 'вся модель'})")
       Dialogs.show_auto_facades(@payload)
       @payload
     end
 
-    # Данные для окна: схема сверху, список фасадов, соотношения сторон.
-    # Никаких превью фасадов — только схема и подписи.
-    def build_payload(result, settings)
+    # Данные для окна: схема сверху, нарисованные фасады, направления
+    # основных плоскостей (для «магнита») и варианты кадра.
+    def build_payload(result, settings, facades)
       {
         'scope' => result[:scope].to_s,
         'plan' => plan_payload(result[:plan]),
-        'aspects' => Config::AUTO_ASPECTS.keys.map do |key|
-          label = key == Config::AUTO_DEFAULT_ASPECT ? "#{key} (по умолчанию)" : key
-          [key, label]
-        end,
-        'defaultAspect' => settings.auto_val('aspect').to_s,
-        'scenePrefix' => settings.auto_val('scene_prefix').to_s,
-        # Чтобы окно могло вернуть координаты нарисованной линии в модель.
+        'magnets' => result[:magnets] || [],
+        'orients' => Config::AUTO_ORIENTS.map { |key, title| [key, title] },
+        'ratios' => Config::AUTO_RATIOS.keys.map { |key| [key, key] } +
+                    [[Config::AUTO_RATIO_AUTO, 'авто — по фасаду']],
+        'defaultOrient' => Config.auto_orient(settings.auto_val('orient')),
+        'defaultRatio' => Config.auto_ratio_name(settings.auto_val('ratio')),
+        'maxFacades' => Config::MAX_AUTO_FACADES,
         'origin' => {
           'x' => (result[:plan] && result[:plan][:min_x]).to_f,
           'y' => (result[:plan] && result[:plan][:min_y]).to_f
@@ -77,125 +83,240 @@ module FacadeExport
         'deleteScenes' => settings.auto_val('delete_scenes') ? true : false,
         'cutSections' => settings.auto_val('cut_sections') ? true : false,
         'baseName' => FacadeExport.model_base_name(Sketchup.active_model),
-        'facades' => result[:facades].map { |facade| facade_payload(facade) }
+        'facades' => facades.map { |facade| facade_payload(facade) }
       }
     end
 
     # Схема для окна: только то, что нужно рисовать (без мировых координат).
     def plan_payload(plan)
-      plan = { 'grid' => AutoFacades::PLAN_GRID, 'cells' => [], 'polygons' => [] } if plan.nil?
+      plan = {} if plan.nil?
       {
-        'grid' => plan['grid'] || AutoFacades::PLAN_GRID,
-        'cells' => plan['cells'] || [],
-        'polygons' => plan['polygons'] || []
+        'grid' => plan['grid'] || plan[:grid] || AutoFacades::PLAN_GRID,
+        'cells' => plan['cells'] || plan[:cells] || [],
+        'polygons' => plan['polygons'] || plan[:polygons] || []
       }
+    end
+
+    # Полный набор данных окна (после удаления фасада и перенумерации).
+    def refresh_payload
+      return nil if @detector.nil?
+      result = @result || {}
+      payload = build_payload(
+        { :plan => @detector.plan, :scope => result[:scope] || :model,
+          :magnets => result[:magnets] || [] },
+        FacadeExport.settings, @facades || []
+      )
+      @payload = payload
+      payload
     end
 
     def facade_payload(facade)
       {
+        'id' => facade.id,
         'index' => facade.index,
         'name' => facade.name,
         'pageName' => facade.page_name,
         'compass' => @detector && @detector.respond_to?(:compass) ?
                      @detector.compass(facade.normal) :
                      facade.page_name.to_s.split('—').last.to_s.strip,
-        'aspect' => facade.aspect,
+        'orient' => facade.orient,
+        'ratio' => facade.ratio,
         'selected' => facade.selected ? true : false,
-        'drawn' => facade.drawn ? true : false,
-        'cut' => facade.cut ? true : false,
         'segment' => facade.segment
       }
     end
 
-    # Окно прислало линию, нарисованную пользователем на схеме.
-    # Возвращает описание нового фасада и передаёт его обратно в окно.
+    # ------------------------------------------------- нарисованные фасады
+
+    # Окно прислало линию — добавляем фасад.
     def add_facade(data)
       detector = @detector
       facades = @facades || []
-      if detector.nil?
-        return respond_add('ok' => false, 'message' => 'Окно устарело: нажмите кнопку заново.')
-      end
-      point = parse_payload(data)
-      if point.nil?
-        return respond_add('ok' => false, 'message' => 'Линия не прочитана.')
-      end
+      return respond_add('ok' => false, 'message' => 'Окно устарело: нажмите кнопку заново.') if detector.nil?
+      return respond_add('ok' => false, 'message' => "Больше #{Config::MAX_AUTO_FACADES} фасадов нельзя.") if
+        facades.length >= Config::MAX_AUTO_FACADES
+      line = line_from_payload(data)
+      return respond_add('ok' => false, 'message' => 'Линия не прочитана.') if line.nil?
       facade = nil
       begin
-        facade = detector.facade_from_line(point['x1'], point['y1'], point['x2'], point['y2'])
+        facade = detector.facade_from_line(line[0], line[1], line[2], line[3])
       rescue StandardError => e
         FacadeExport.log("Авто-фасады: линия не разобрана (#{e.message})")
       end
-      if facade.nil?
-        return respond_add('ok' => false,
-                           'message' => 'Здесь стена не найдена — проведите линию вдоль фасада.')
-      end
-      prefix = (FacadeExport.settings.auto_val('scene_prefix') || 'Фасад').to_s.strip
-      prefix = 'Фасад' if prefix.empty?
-      index = (facades.map(&:index).max || 0).to_i + 1
-      facade.index = index
-      facade.selected = true
-      facade.name = "#{prefix} #{index}"
-      facade.page_name = "#{prefix} #{index} — #{detector.compass(facade.normal)}"
-      # Линия на схеме — ровно та, которую провёл пользователь (у нарисованного
-      # фасада она уже задана). Подменять её габаритами найденной стены нельзя:
-      # линия «прыгала» и укорачивалась.
-      if !facade.drawn && detector.plan
-        facade.segment = detector.plan_segment(facade, detector.plan)
-      end
+      return respond_add('ok' => false, 'message' => 'Не удалось создать фасад по этой линии.') if facade.nil?
+      facade.id = next_id(facades)
       facades << facade
+      detector.renumber!(facades)
       @facades = facades
+      save_drawn(facades)
       respond_add(facade_payload(facade).merge('ok' => true))
+    end
+
+    # Окно передвинуло нарисованную линию (поворачивать нельзя).
+    def move_facade(data)
+      facade, position, error = find_facade(data)
+      return respond_update('ok' => false, 'message' => error) if facade.nil?
+      line = line_from_payload(data)
+      return respond_update('ok' => false, 'message' => 'Линия не прочитана.') if line.nil?
+      fresh = begin
+        @detector.move(facade, line[0], line[1], line[2], line[3])
+      rescue StandardError => e
+        FacadeExport.log("Авто-фасады: линия не передвинута (#{e.message})")
+        nil
+      end
+      return respond_update('ok' => false, 'message' => 'Не удалось передвинуть фасад.') if fresh.nil?
+      @facades[position] = fresh
+      save_drawn(@facades)
+      respond_update(facade_payload(fresh).merge('ok' => true))
     end
 
     # Окно просит развернуть фасад в другую сторону (оставаясь на месте).
     def invert_facade(data)
-      payload = parse_payload(data)
-      detector = @detector
-      index = payload ? payload['index'].to_i : nil
-      if detector.nil? || index.nil?
-        return respond_add('ok' => false, 'message' => 'Окно устарело: нажмите кнопку заново.')
-      end
-      list = @facades || []
-      position = list.index { |facade| facade.index == index }
-      if position.nil?
-        return respond_add('ok' => false, 'message' => 'Фасад не найден.')
-      end
+      facade, position, error = find_facade(data)
+      return respond_update('ok' => false, 'message' => error) if facade.nil?
       fresh = begin
-        detector.invert(list[position])
+        @detector.invert(facade)
       rescue StandardError => e
         FacadeExport.log("Авто-фасады: фасад не развёрнут (#{e.message})")
         nil
       end
-      if fresh.nil?
-        return respond_add('ok' => false, 'message' => 'Не удалось развернуть фасад.')
-      end
-      list[position] = fresh
-      @facades = list
+      return respond_update('ok' => false, 'message' => 'Не удалось развернуть фасад.') if fresh.nil?
+      @facades[position] = fresh
+      save_drawn(@facades)
       respond_update(facade_payload(fresh).merge('ok' => true))
     end
 
-    # Ответ окну на разворот фасада: обновляем одну строку.
-    def respond_update(payload)
+    # Окно убрало фасад.
+    def remove_facade(data)
+      facade, position, error = find_facade(data)
+      return { 'ok' => false, 'message' => error } if facade.nil?
+      @facades.delete_at(position)
+      @detector.renumber!(@facades)
+      save_drawn(@facades)
+      # Номера считает Ruby — окно получает готовый список 1..N.
       begin
-        Dialogs.push_auto_update(payload)
+        Dialogs.push_auto_data_public
       rescue StandardError => e
-        FacadeExport.log("Авто-фасады: обновление в окно не отправлено (#{e.message})")
+        FacadeExport.log("Авто-фасады: окно не перерисовано (#{e.message})")
       end
-      payload
+      { 'ok' => true }
     end
 
-    # Ответ окну на нарисованную линию: и успех, и отказ видны пользователю.
-    def respond_add(payload)
-      begin
-        Dialogs.push_auto_add(payload)
-      rescue StandardError => e
-        FacadeExport.log("Авто-фасады: ответ в окно не отправлен (#{e.message})")
-      end
-      payload
+    def find_facade(data)
+      payload = parse_payload(data)
+      return [nil, nil, 'Окно устарело: нажмите кнопку заново.'] if payload.nil? || @detector.nil?
+      list = @facades || []
+      id = payload['id']
+      position = list.index { |facade| facade.id.to_i == id.to_i } if id
+      position ||= list.index { |facade| facade.index.to_i == payload['index'].to_i }
+      return [nil, nil, 'Фасад не найден.'] if position.nil?
+      [list[position], position, nil]
     end
+
+    def next_id(facades)
+      (Array(facades).map { |facade| facade.id.to_i }.max || 0) + 1
+    end
+
+    def line_from_payload(data)
+      payload = parse_payload(data)
+      return nil unless payload.is_a?(Hash)
+      values = %w[x1 y1 x2 y2].map { |key| payload[key] }
+      return nil if values.any? { |value| value.nil? }
+      line = values.map { |value| value.to_f }
+      length = Math.sqrt((line[2] - line[0])**2 + (line[3] - line[1])**2)
+      return nil if length < 1.0e-6
+      line
+    end
+
+    # ------------------------------------------------------- хранение в файле
+
+    # Ключ контекста: открытая группа (по persistent_id) или вся модель.
+    def storage_key(model = nil)
+      model ||= Sketchup.active_model
+      path = begin
+        model.active_path
+      rescue StandardError
+        nil
+      end
+      return 'model' if path.nil? || path.empty?
+      ids = path.map do |instance|
+        begin
+          instance.persistent_id
+        rescue StandardError
+          begin
+            instance.entityID
+          rescue StandardError
+            instance.object_id
+          end
+        end
+      end
+      "path:#{ids.join('/')}"
+    end
+
+    def read_store(model = nil)
+      model ||= Sketchup.active_model
+      raw = begin
+        model.get_attribute(DICT_NAME, DICT_KEY, '')
+      rescue StandardError
+        ''
+      end
+      return {} if raw.nil? || raw.to_s.empty?
+      data = JSON.parse(raw.to_s)
+      data.is_a?(Hash) ? data : {}
+    rescue StandardError => e
+      FacadeExport.log("Авто-фасады: сохранённые фасады не прочитаны (#{e.message})")
+      {}
+    end
+
+    # Сохранённые фасады текущего контекста.
+    def load_drawn(model = nil)
+      Array(read_store(model)[storage_key(model)])
+    rescue StandardError
+      []
+    end
+
+    # Записать фасады контекста. Одна строка JSON в атрибутах модели —
+    # это считанные килобайты, время сохранения файла не меняется.
+    def save_drawn(facades, model = nil)
+      model ||= Sketchup.active_model
+      return false if model.nil?
+      store = read_store(model)
+      key = storage_key(model)
+      list = Array(facades).map { |facade| stored_facade(facade) }
+      if list.empty?
+        store.delete(key)
+      else
+        store[key] = list
+      end
+      begin
+        if store.empty?
+          model.set_attribute(DICT_NAME, DICT_KEY, '')
+        else
+          model.set_attribute(DICT_NAME, DICT_KEY, JSON.generate(store))
+        end
+      rescue StandardError => e
+        FacadeExport.log("Авто-фасады: фасады не сохранены в модели (#{e.message})")
+        return false
+      end
+      true
+    end
+
+    def stored_facade(facade)
+      line = facade.line_world || [0.0, 0.0, 0.0, 0.0]
+      {
+        'id' => facade.id,
+        'x1' => line[0].round(2), 'y1' => line[1].round(2),
+        'x2' => line[2].round(2), 'y2' => line[3].round(2),
+        'nx' => facade.normal.x.round(4), 'ny' => facade.normal.y.round(4),
+        'name' => facade.name.to_s,
+        'orient' => facade.orient.to_s,
+        'ratio' => facade.ratio.to_s
+      }
+    end
+
+    # ------------------------------------------------------------- экспорт
 
     # Вызывается из окна: пользователь нажал «Экспортировать».
-    # payload — JSON-строка с выбором фасадов, именами и соотношениями.
     def export(payload)
       data = parse_payload(payload)
       return nil if data.nil?
@@ -207,7 +328,7 @@ module FacadeExport
 
       selected = apply_selection(@facades || [], data)
       if selected.empty?
-        UI.messagebox('Не выбран ни один фасад.')
+        UI.messagebox('Не нарисовано ни одного фасада.')
         return nil
       end
 
@@ -219,6 +340,10 @@ module FacadeExport
 
       settings.set_export('last_directory', destination[:directory])
       settings.save
+
+      detector.renumber!(selected)
+      @facades = selected
+      save_drawn(selected)
 
       detector.build_cameras!(selected)
       selected = selected.select(&:camera)
@@ -324,22 +449,24 @@ module FacadeExport
       end
     end
 
+    # Фасады, которые окно оставило: порядок окна = порядок нумерации.
     def apply_selection(facades, data)
-      chosen = {}
+      wanted = []
       Array(data['facades']).each do |item|
-        index = item['index'].to_i
         next unless item['selected'] == true || item['selected'] == 'true'
-        chosen[index] = item
+        wanted << item
       end
       result = []
-      facades.each do |facade|
-        item = chosen[facade.index]
-        next if item.nil?
+      wanted.each do |item|
+        id = item['id']
+        facade = facades.find { |f| !id.nil? && f.id.to_i == id.to_i }
+        facade ||= facades.find { |f| f.index.to_i == item['index'].to_i }
+        next if facade.nil?
         facade.selected = true
-        aspect = item['aspect'].to_s
-        facade.aspect = Config::AUTO_ASPECTS.key?(aspect) ? aspect : Config::AUTO_DEFAULT_ASPECT
+        facade.orient = Config.auto_orient(item['orient'] || facade.orient)
+        facade.ratio = Config.auto_ratio_name(item['ratio'] || facade.ratio)
         name = item['name'].to_s.strip
-        facade.name = name.empty? ? facade.page_name : name
+        facade.name = name.empty? ? facade.name : name
         result << facade
       end
       result
@@ -351,6 +478,24 @@ module FacadeExport
     rescue StandardError => e
       FacadeExport.log("Авто-фасады: данные окна не прочитаны (#{e.message})")
       nil
+    end
+
+    def respond_add(payload)
+      begin
+        Dialogs.push_auto_add(payload)
+      rescue StandardError => e
+        FacadeExport.log("Авто-фасады: ответ в окно не отправлен (#{e.message})")
+      end
+      payload
+    end
+
+    def respond_update(payload)
+      begin
+        Dialogs.push_auto_update(payload)
+      rescue StandardError => e
+        FacadeExport.log("Авто-фасады: обновление в окно не отправлено (#{e.message})")
+      end
+      payload
     end
 
     def confirm_overwrite(destination, labels)

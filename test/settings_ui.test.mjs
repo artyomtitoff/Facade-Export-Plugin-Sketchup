@@ -39,7 +39,7 @@ const defaults = {
   },
   auto: {
     delete_scenes: true, cut_sections: true, create_scenes: true,
-    aspect: "авто", min_area: 3, max_facades: 8, scene_prefix: "Фасад",
+    orient: "h", ratio: "3:4", max_facades: 30, scene_prefix: "Фасад",
   },
   maps: [
     {
@@ -108,27 +108,39 @@ check("Есть кнопка «+» для своей карты", !!q("nav butto
 
 const autoTab = q("#tab-auto");
 check("Авто: вкладка есть", !!autoTab);
-check("Авто: соотношение по умолчанию «авто»", byPath("auto.aspect")?.value === "авто",
-  byPath("auto.aspect")?.value);
-const autoAspects = [...byPath("auto.aspect").querySelectorAll("option")].map((o) => o.value);
-check("Авто: в списке есть вертикальные соотношения",
-  ["3:4", "2:3", "9:16"].every((v) => autoAspects.includes(v)), autoAspects.join(", "));
-check("Авто: «авто» подписано как значение по умолчанию",
-  [...byPath("auto.aspect").querySelectorAll("option")]
-    .some((o) => o.value === "авто" && o.textContent.includes("по умолчанию")));
+check("Авто: ориентация по умолчанию — горизонтальная",
+  byPath("auto.orient")?.value === "h", byPath("auto.orient")?.value);
+const autoOrients = [...byPath("auto.orient").querySelectorAll("option")]
+  .map((o) => o.value);
+check("Авто: есть горизонтальное, вертикальное и квадрат",
+  ["h", "v", "sq"].every((v) => autoOrients.includes(v)), autoOrients.join(", "));
+check("Авто: пропорции по умолчанию — 3:4",
+  byPath("auto.ratio")?.value === "3:4", byPath("auto.ratio")?.value);
+const autoRatios = [...byPath("auto.ratio").querySelectorAll("option")]
+  .map((o) => o.value);
+check("Авто: в списке пропорций есть 3:1, 2:1, 16:9, 3:4, 9:16, 1:3",
+  ["3:1", "2:1", "16:9", "3:4", "9:16", "1:3"].every((v) => autoRatios.includes(v)),
+  autoRatios.join(", "));
+check("Авто: 3:4 подписано как значение по умолчанию",
+  [...byPath("auto.ratio").querySelectorAll("option")]
+    .some((o) => o.value === "3:4" && o.textContent.includes("по умолчанию")));
+check("Авто: старого «соотношения» больше нет", byPath("auto.aspect") === null);
+check("Авто: минимальной площади больше нет", byPath("auto.min_area") === null);
 check("Авто: сцены создаются по умолчанию", byPath("auto.create_scenes")?.checked === true);
 check("Авто: сцены удаляются после экспорта по умолчанию",
   byPath("auto.delete_scenes")?.checked === true);
 check("Авто: подрезка сечением включена по умолчанию",
   byPath("auto.cut_sections")?.checked === true);
-check("Авто: минимальная площадь 3 %", byPath("auto.min_area")?.value === "3",
-  byPath("auto.min_area")?.value);
-check("Авто: максимум фасадов 8", byPath("auto.max_facades")?.value === "8",
+check("Авто: максимум фасадов 30", byPath("auto.max_facades")?.value === "30",
   byPath("auto.max_facades")?.value);
 check("Авто: начало имени сцены — «Фасад»", byPath("auto.scene_prefix")?.value === "Фасад",
   byPath("auto.scene_prefix")?.value);
 check("Авто: подсказка про временные сцены",
   autoTab.textContent.includes("сцены временные"));
+check("Авто: сказано, что фасады рисует пользователь",
+  autoTab.textContent.includes("проводите линии мышью"), autoTab.textContent.slice(0, 120));
+check("Авто: сказано, что фасады сохраняются в файле",
+  autoTab.textContent.includes("сохраняются в файле"));
 
 /* ------------------------------------------- вкладка «Экспорт» */
 
@@ -397,9 +409,9 @@ check("Своя карта: перекраска стекла и цвет сох
   saved?.maps?.[4]?.glass_highlight === true && saved?.maps?.[4]?.tinted_h === 210,
   `${saved?.maps?.[4]?.glass_highlight} / ${saved?.maps?.[4]?.tinted_h}`);
 check("Своя карта: текстуры выключены для каркаса", saved?.maps?.[4]?.textures === false);
-check("Авто: настройки сохраняются", saved?.auto?.aspect === "авто" &&
-  saved?.auto?.delete_scenes === true && saved?.auto?.min_area === 3,
-  JSON.stringify(saved?.auto));
+check("Авто: настройки сохраняются", saved?.auto?.orient === "h" &&
+  saved?.auto?.ratio === "3:4" && saved?.auto?.delete_scenes === true &&
+  saved?.auto?.max_facades === 30, JSON.stringify(saved?.auto));
 
 fire(q("button[data-remove-map='4']"), "click");
 check("Кнопка удаления убирает карту", doc.querySelectorAll("nav button[data-tab]").length === 6,

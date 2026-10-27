@@ -190,6 +190,11 @@ end
 module Sketchup
   # Простейшие сущности модели (для проверки экспорта из открытой группы).
   class Entity
+    # Как в SketchUp: устойчивый идентификатор, который сохраняется в файле.
+    def persistent_id
+      Sketchup.next_entity_id!
+      @persistent_id
+    end
     attr_accessor :hidden, :bounds, :layer
 
     def initialize
@@ -516,6 +521,15 @@ module Sketchup
 end
 
 module Sketchup
+  # Сквозной счётчик persistent_id (как в SketchUp — уникален в файле).
+  def self.next_entity_id!
+    @entity_seq = (@entity_seq || 0) + 1
+  end
+
+  def self.reset_entity_ids!
+    @entity_seq = 0
+  end
+
   COLOR_NAMES = %w[red green blue alpha].freeze
 
   class Color
@@ -917,6 +931,23 @@ module Sketchup
 
   class Model
     attr_accessor :title, :path, :rendering_options, :shadow_info, :materials, :bounds
+
+    # Атрибуты модели — так плагин хранит нарисованные фасады в файле.
+    def get_attribute(dict, key, default = nil)
+      store = (@attributes ||= {})[dict.to_s]
+      return default if store.nil? || !store.key?(key.to_s)
+      store[key.to_s]
+    end
+
+    def set_attribute(dict, key, value)
+      (@attributes ||= {})[dict.to_s] ||= {}
+      @attributes[dict.to_s][key.to_s] = value
+      true
+    end
+
+    def attribute_dictionaries
+      (@attributes || {}).keys
+    end
 
     def initialize
       @title = 'Заречная'
