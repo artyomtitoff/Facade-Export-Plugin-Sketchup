@@ -9,7 +9,7 @@ module FacadeExport
   module Config
     PREF_SECTION = 'FacadeExport'.freeze
     PREF_KEY     = 'settings'.freeze
-    SETTINGS_VERSION = 4
+    SETTINGS_VERSION = 5
 
     # Значения "RenderMode" (SketchUp, "Правка > Грань"):
     # 0 — Каркас, 1 — Скрытые линии, 2 — Затенение, 5 — Монохромный.
@@ -38,6 +38,14 @@ module FacadeExport
     # Соотношения сторон кадра. Всегда записываются «широкой» стороной:
     # для вертикальных объектов (башен, небоскрёбов) плагин сам разворачивает
     # кадр, поэтому отдельные вертикальные варианты (3:4, 2:3, 9:16) не нужны.
+    #
+    # «auto» — кадр по фасаду: у каждого изображения свои размеры, ровно
+    # вокруг своего фасада, без пустых полей. Именно поэтому это значение
+    # стоит по умолчанию: при фиксированных пропорциях (4:3) узкий фасад
+    # вписывается по высоте и получает широкие пустые полосы слева и справа —
+    # те самые «большие отступы».
+    AUTO_ASPECT = 'auto'.freeze
+
     ASPECTS = {
       '4:3'  => [4, 3],
       '3:2'  => [3, 2],
@@ -47,7 +55,25 @@ module FacadeExport
       '1:1'  => [1, 1]
     }.freeze
 
-    DEFAULT_ASPECT = '4:3'.freeze
+    # Пропорции для режима «только видимый участок»: там кадр повторяет экран,
+    # поэтому «по фасаду» не имеет смысла и берётся 4:3.
+    FALLBACK_ASPECT = '4:3'.freeze
+
+    DEFAULT_ASPECT = AUTO_ASPECT
+
+    # Пункты выпадающего списка пропорций (значение, подпись).
+    def self.aspect_options
+      [['auto', 'по фасаду — без полей']] +
+        ASPECTS.keys.map { |key| [key, key == '4:3' ? '4:3' : key] }
+    end
+
+    def self.auto_aspect?(name)
+      name.to_s == AUTO_ASPECT
+    end
+
+    def self.aspect_valid?(name)
+      auto_aspect?(name) || ASPECTS.key?(name.to_s)
+    end
 
     # Пределы стороны изображения (ограничение SketchUp — 16000).
     MAX_IMAGE_SIDE = 16_000
@@ -75,7 +101,7 @@ module FacadeExport
     end
 
     def self.aspect_ratio(name)
-      ASPECTS[name.to_s] || ASPECTS[DEFAULT_ASPECT]
+      ASPECTS[name.to_s] || ASPECTS[FALLBACK_ASPECT]
     end
 
     # ---------------------------------------------------------------- defaults
@@ -98,6 +124,9 @@ module FacadeExport
 
         # Расширенные
         'aspect'          => DEFAULT_ASPECT,
+        # Карта окон: обычные (не стеклянные) материалы с текстурой
+        # становятся белыми, чтобы на карте остались только окна.
+        'whiten_textures' => true,
         'projection'      => 'parallel', # параллельная проекция
         'sun_for_shading' => false,      # "использовать солнце для затенения"
         'use_view_size'   => false,
@@ -319,13 +348,13 @@ module FacadeExport
       e['height']     = clamp_int(e['height'], 0, Config::MAX_IMAGE_SIDE, 0)
       e['line_scale'] = clamp_float(e['line_scale'], 0.01, 10.0, 0.3)
       e['margin']     = clamp_float(e['margin'], 0.0, 0.25, 0.02)
-      e['aspect']     = Config::DEFAULT_ASPECT unless Config::ASPECTS.key?(e['aspect'].to_s)
+      e['aspect']     = Config::DEFAULT_ASPECT unless Config::aspect_valid?(e['aspect'])
       e['projection'] = 'parallel' unless %w[parallel perspective].include?(e['projection'].to_s)
 
       migrate_old_keys!(e)
       %w[restore_view show_report fit_all_facades sun_for_shading use_view_size
          antialias transparent hide_sky hide_ground hide_watermarks
-         visible_area].each do |key|
+         visible_area whiten_textures].each do |key|
         e[key] = truthy(e[key])
       end
       # Служебная графика (направляющие, оси, тексты, размеры, плоскости
@@ -371,8 +400,16 @@ module FacadeExport
     # Настройки старых версий (до 1.5.0, т.е. и 1.5.1): «Оставлять небо/землю» превратились
     # в «Скрывать небо/землю». Старые ключи удаляются ниже.
     def migrate_old_keys!(e)
+      old_version = @data['version'].to_i
       e['hide_sky'] = false if e.key?('show_sky') && truthy(e['show_sky'])
       e['hide_ground'] = false if e.key?('show_ground') && truthy(e['show_ground'])
+      # До 1.5.3 пропорции были жёстко 4:3 (другого значения по умолчанию не
+      # существовало), из-за чего у узких фасадов оставались большие поля.
+      # У кого настройки ещё не правились новой версией — переводим на
+      # «по фасаду»; выбранные вручную пропорции сохраняются.
+      if old_version < 5 && e['aspect'].to_s == '4:3'
+        e['aspect'] = Config::AUTO_ASPECT
+      end
       @data['version'] = Config::SETTINGS_VERSION
     end
 

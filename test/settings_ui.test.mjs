@@ -32,7 +32,7 @@ const defaults = {
   export: {
     width: 9999, height: 0, line_scale: 0.3, margin: 0.02,
     restore_view: true, show_report: true, fit_all_facades: false,
-    aspect: "4:3", projection: "parallel", sun_for_shading: false,
+    aspect: "auto", whiten_textures: true, projection: "parallel", sun_for_shading: false,
     use_view_size: false, visible_area: false, antialias: false, transparent: true,
     background: "#FFFFFF",
     hide_sky: true, hide_ground: true, hide_watermarks: true, last_directory: "",
@@ -105,8 +105,11 @@ const visibleExport = [...exportTab.querySelectorAll("input, select")]
   .filter((el) => !el.closest("details.adv"));
 const visiblePaths = visibleExport.map((el) => el.getAttribute("data-path"));
 check("Экспорт: видимых полей 8", visibleExport.length === 8, visiblePaths.join(", "));
-check("Экспорт: видны ширина/высота/линии/отступ",
-  ["export.width", "export.height", "export.line_scale", "export.margin"].every((p) => visiblePaths.includes(p)),
+// «Пропорции» переехали в основные настройки, «отступ» — в расширенные.
+check("Экспорт: видны ширина/высота/линии/пропорции",
+  ["export.width", "export.height", "export.line_scale", "export.aspect"].every((p) => visiblePaths.includes(p)),
+  visiblePaths.join(", "));
+check("Экспорт: отступа среди основных полей нет", !visiblePaths.includes("export.margin"),
   visiblePaths.join(", "));
 check("Экспорт: видны возврат вида и отчёт",
   visiblePaths.includes("export.restore_view") && visiblePaths.includes("export.show_report"));
@@ -114,15 +117,22 @@ check("Ширина 9999 из настроек", byPath("export.width")?.value =
 check("Ширина: максимум 9999", byPath("export.width")?.getAttribute("max") === "9999");
 check("Высота 0 (авто)", byPath("export.height")?.value === "0");
 check("Множитель линий 0.3", byPath("export.line_scale")?.value === "0.3");
-check("Отступ 0.02", byPath("export.margin")?.value === "0.02");
+check("Отступ 0.02 (в расширенных)", byPath("export.margin")?.value === "0.02" &&
+  byPath("export.margin").closest("details.adv") !== null,
+  byPath("export.margin")?.value);
 check("Параллельная проекция включена", byPath("export.projection")?.checked === true);
 check("Солнце для затенения только на вкладке «Экспорт»",
   !!byPath("export.sun_for_shading") && !doc.querySelector('[data-path^="maps."][data-path$="sun_for_shading"]'));
 check("Светлее/темнее больше нет на вкладке «Экспорт»",
   !byPath("export.shadow_light") && !byPath("export.shadow_dark"));
-check("Параметры кадра спрятаны в «Расширенные настройки»",
-  !!exportTab.querySelector("details.adv") && byPath("export.aspect")?.closest("details.adv") !== null);
-check("Соотношение сторон по умолчанию 4:3", byPath("export.aspect")?.value === "4:3");
+check("Пропорции кадра — в основных настройках, не в «Расширенных»",
+  !!exportTab.querySelector("details.adv") && byPath("export.aspect")?.closest("details.adv") === null);
+check("Пропорции по умолчанию — «по фасаду»", byPath("export.aspect")?.value === "auto",
+  byPath("export.aspect")?.value);
+check("В списке пропорций есть «по фасаду» первой",
+  [...byPath("export.aspect").querySelectorAll("option")][0].value === "auto");
+check("Подсказка про пропорции объясняет пустые поля",
+  byPath("export.aspect").closest(".field").textContent.includes("без пустых полей"));
 check("Нет формулировки «по заданию»", !doc.body.textContent.includes("по заданию"));
 
 // --- п. 3: соотношения — только широкие + 2:1 и 3:1
@@ -134,10 +144,19 @@ check("Соотношения: вертикальных дублей нет",
   !aspectValues.includes("3:4") && !aspectValues.includes("2:3") && !aspectValues.includes("9:16"),
   aspectValues.join(", "));
 check("Соотношения: все широкие или 1:1",
-  aspectValues.every((v) => {
+  aspectValues.filter((v) => v !== "auto").every((v) => {
     const [w, h] = v.split(":").map(Number);
     return w >= h;
   }), aspectValues.join(", "));
+
+// --- карта окон: отбеливание текстур выключается в расширенных настройках
+const whiten = byPath("export.whiten_textures");
+check("Отбеливание текстур на карте окон — флажок в расширенных настройках",
+  !!whiten && whiten.closest("details.adv") !== null);
+check("Отбеливание включено по умолчанию", whiten?.checked === true);
+check("У отбеливания есть пояснение",
+  whiten.closest(".check").textContent.includes("белыми") &&
+  whiten.closest(".check").textContent.includes("окна"));
 
 // --- п. 4: «только видимый участок»
 check("Есть флажок «Экспортировать только видимый участок»", !!byPath("export.visible_area"));
