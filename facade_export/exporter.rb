@@ -148,6 +148,12 @@ module FacadeExport
         @result.scope = scope
         @result.image_width = plan[:image_width]
         @result.image_height = plan[:image_height]
+        sizes = plan[:sizes] || Array.new(@facade_count) { [plan[:image_width], plan[:image_height]] }
+        FacadeExport.log(
+          "Кадр: #{plan[:auto] ? 'по фасаду' : "#{plan[:image_width]}×#{plan[:image_height]}"} " \
+          "(масштаб #{format('%.3f', plan[:scale].to_f)} px/ед., зазор #{plan[:gap]} px, " \
+          "размеры: #{sizes.map { |w, h| "#{w}×#{h}" }.uniq.join(', ')})"
+        )
 
         jobs = Exporter.output_jobs(@settings)
         total = jobs.length * @facade_count
@@ -172,7 +178,9 @@ module FacadeExport
               # считал кадр уже с новой камерой.
               invalidate_view
               apply_shadows(job.map, directions[facade_index], shadow)
-              write_job(job, number)
+              # Размер PNG — свой у каждого фасада (кадр «по фасаду»),
+              # у всех остальных режимов он общий.
+              write_job(job, number, sizes[facade_index])
             end
           rescue StandardError => e
             @result.errors << "#{job.title}: #{e.message}"
@@ -266,12 +274,15 @@ module FacadeExport
       # дорогая часть, повторять её на каждый фасад нельзя.
       bounds, scope = export_bounds
       plan = Framing.plan(bounds, directions, @settings.export)
+      sizes = Framing.frame_sizes(plan, directions.length)
       cameras = directions.each_with_index.map do |direction, index|
+        width, height = sizes[index]
         Framing.build_camera(
           bounds, direction, plan[:projections][index], plan[:scale],
-          plan[:image_width], plan[:image_height], plan[:gap], parallel
+          width, height, plan[:gap], parallel
         )
       end
+      plan[:sizes] = sizes
       [directions.first(@facade_count), cameras.first(@facade_count), plan, scope]
     end
 
@@ -484,10 +495,10 @@ module FacadeExport
     end
 
     # Запись одного кадра: файл в папку пользователя, статистика в отчёт.
-    def write_job(job, number)
+    def write_job(job, number, size = nil)
       path = file_path(number, job)
       started = Time.now
-      ok = write_image(path)
+      ok = write_image(path, size)
       if ok && File.exist?(path)
         @result.files << path
         @result.per_image << [path, Time.now - started, file_size(path)]
@@ -501,7 +512,10 @@ module FacadeExport
     end
 
     def apply_glass(map, job)
-      whiten = windows_map?(map) && opaque_textures?
+      # Отбеливание непрозрачных материалов с текстурой — только на карте
+      # окон и только если пользователь не снял галочку в расширенных
+      # настройках.
+      whiten = windows_map?(map) && whiten_textures? && opaque_textures?
       return nil unless whiten || glass_needed?(job)
       colors = {
         'main'    => Util.hsl_to_rgb(map['main_h'], map['main_s'], map['main_l']),
@@ -534,8 +548,14 @@ module FacadeExport
         :railing_max => Config::GLASS_RAILING_MAX,
         :tinted_min => Config::GLASS_TINTED_MIN,
         :opaque_min => Config::GLASS_OPAQUE_MIN,
-        :include_opaque => true
+        :include_opaque => whiten_textures?
       )
+    end
+
+    # Отбеливать ли на карте окон обычные (не стеклянные) материалы
+    # с текстурой: по умолчанию да — на карте должны остаться только окна.
+    def whiten_textures?
+      @settings.truthy(@settings.exp('whiten_textures'))
     end
 
     # Есть ли на карте окон что отбеливать (непрозрачные материалы с текстурой).
@@ -567,8 +587,8 @@ module FacadeExport
     #     и не давала удалить/перенести готовый PNG);
     #   * Проводник не видит недописанный .png и не запускает для него
     #     предпросмотр (dllhost.exe), который блокирует файл на минуты.
-    def write_image(path)
-      options = image_options
+    def write_image(path, size = nil)
+      options = image_options(size)
       temp = temp_file_path(path)
       if temp
         remove_existing(temp)
@@ -589,10 +609,11 @@ module FacadeExport
       ok && File.exist?(path)
     end
 
-    def image_options
+    def image_options(size = nil)
+      width, height = size || [@result.image_width, @result.image_height]
       options = {
-        :width       => @result.image_width,
-        :height      => @result.image_height,
+        :width       => width,
+        :height      => height,
         :antialias   => @settings.exp('antialias') ? true : false,
         :transparent => @settings.exp('transparent') ? true : false
       }

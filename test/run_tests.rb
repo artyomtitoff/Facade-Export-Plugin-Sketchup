@@ -114,10 +114,17 @@ check('Имя файла: префикс из окна сохранения со
       FacadeExport::Exporter.file_name('Дом_Иванова', 1, 'Текстура') == 'Дом_Иванова_Фасад_1_Текстура.png')
 
 settings = fresh_settings
-check('Версия настроек 4', settings.data['version'] == 4, settings.data['version'])
+check('Версия настроек 5', settings.data['version'] == 5, settings.data['version'])
 check('Ширина по умолчанию 9999', settings.exp('width') == 9999)
 check('Высота автоматическая (0)', settings.exp('height') == 0)
-check('Соотношение сторон 4:3', settings.exp('aspect') == '4:3', settings.exp('aspect').inspect)
+check('Пропорции по умолчанию — «по фасаду» (без полей)',
+      settings.exp('aspect') == 'auto', settings.exp('aspect').inspect)
+check('Кадр «по фасаду» включён по умолчанию', FacadeExport::Config.auto_aspect?('auto'))
+check('В списке пропорций есть и «по фасаду», и 4:3',
+      FacadeExport::Config.aspect_options.map(&:first) == %w[auto 4:3 3:2 16:9 2:1 3:1 1:1],
+      FacadeExport::Config.aspect_options.inspect)
+check('Отбеливание текстур на карте окон включено по умолчанию',
+      settings.exp('whiten_textures') == true, settings.exp('whiten_textures').inspect)
 check('Множитель линий 0,3x', (settings.exp('line_scale') - 0.3).abs < 1e-9)
 check('Отступ вокруг фасада 0,02', (settings.exp('margin') - 0.02).abs < 1e-9, settings.exp('margin'))
 check('Сглаживание выключено', settings.exp('antialias') == false)
@@ -144,7 +151,15 @@ old_settings = FacadeExport::Settings.new(
 check('Старые настройки: включённое небо сохраняется',
       old_settings.exp('hide_sky') == false && old_settings.exp('hide_ground') == true,
       [old_settings.exp('hide_sky'), old_settings.exp('hide_ground')].inspect)
-check('Старые настройки: версия обновлена', old_settings.data['version'] == 4)
+check('Старые настройки: версия обновлена', old_settings.data['version'] == 5)
+# До 1.5.3 пропорции были жёстко 4:3 — такие настройки переводятся на «по фасаду»,
+# а выбранные вручную — нет.
+legacy = FacadeExport::Settings.new('version' => 4, 'export' => { 'aspect' => '4:3' })
+check('Старые настройки: пропорции 4:3 -> «по фасаду»', legacy.exp('aspect') == 'auto',
+      legacy.exp('aspect').inspect)
+chosen = FacadeExport::Settings.new('version' => 5, 'export' => { 'aspect' => '4:3' })
+check('Сознательно выбранные 4:3 не перетираются', chosen.exp('aspect') == '4:3',
+      chosen.exp('aspect').inspect)
 check('Возврат вида включён', settings.exp('restore_view') == true)
 check('Отчёт включён', settings.exp('show_report') == true)
 check('Четыре стандартные карты', settings.maps.length == 4)
@@ -211,7 +226,9 @@ check('Строка "true" -> true', settings.map('texture')['enabled'] == true)
 check('Неизвестный режим -> shaded', settings.map('texture')['render_mode'] == 'shaded')
 
 settings.replace!('export' => { 'aspect' => 'нет такого', 'projection' => 'странная' })
-check('Неизвестное соотношение -> 4:3', settings.exp('aspect') == '4:3')
+check('Неизвестное соотношение -> по фасаду', settings.exp('aspect') == 'auto')
+settings.replace!('export' => { 'aspect' => '4:3' })
+check('4:3 выбирается вручную', settings.exp('aspect') == '4:3')
 check('Есть широкие соотношения 2:1 и 3:1',
       FacadeExport::Config::ASPECTS.key?('2:1') && FacadeExport::Config::ASPECTS.key?('3:1'),
       FacadeExport::Config::ASPECTS.keys.inspect)
@@ -247,11 +264,60 @@ dirs.each_with_index do |d, i|
 end
 check_close('Поворот на 90°: длина вектора = 1', dirs[1].length, 1.0, 1e-9)
 
+# ---- кадр «по фасаду» (по умолчанию): у каждого PNG свои размеры, полей нет
 fresh_settings
-plan = FacadeExport::Framing.plan(model.bounds, dirs, FacadeExport.settings.export)
+tight = FacadeExport::Framing.plan(model.bounds, dirs, FacadeExport.settings.export)
+tight_sizes = FacadeExport::Framing.frame_sizes(tight, 4)
+tight_proj = tight[:projections]
+check('«По фасаду»: размер кадра у каждого фасада свой', tight_sizes.uniq.length == 2,
+      tight_sizes.inspect)
+check('«По фасаду»: у большого фасада длинная сторона 9999',
+      tight_sizes[0][0] == 9999, tight_sizes.inspect)
+# В кадре ровно фасад плюс зазор с каждой стороны — и ничего больше.
+tight_sizes.each_with_index do |(w, h), i|
+  content_w = (tight_proj[i][:width] * tight[:scale]).round
+  content_h = (tight_proj[i][:height] * tight[:scale]).round
+  check("«По фасаду»: фасад #{i + 1} занимает кадр целиком (полей нет)",
+        (w - content_w - 2 * tight[:gap]).abs <= 1 && (h - content_h - 2 * tight[:gap]).abs <= 1,
+        [w, h, content_w, content_h, tight[:gap]].inspect)
+end
+check('«По фасаду»: масштаб общий у всех фасадов',
+      tight[:scale].positive? && (tight[:scale] - 9599.0 / 1200.0).abs < 1e-6, tight[:scale])
+check('«По фасаду»: у узкого фасада кадр уже, но той же высоты',
+      tight_sizes[1][0] < tight_sizes[0][0] && tight_sizes[1][1] == tight_sizes[0][1],
+      tight_sizes.inspect)
+tight_cams = dirs.each_with_index.map do |d, i|
+  w, h = tight_sizes[i]
+  FacadeExport::Framing.build_camera(model.bounds, d, tight_proj[i], tight[:scale],
+                                     w, h, tight[:gap], true)
+end
+tight_gaps = tight_cams.each_with_index.map do |cam, i|
+  # Низ кадра и низ фасада: зазор должен быть одинаковым у всех фасадов.
+  (tight_proj[i][:v_min] - (cam.target.z - cam.height / 2.0)) * tight[:scale]
+end
+check('«По фасаду»: фасад прижат к низу кадра с тем же зазором',
+      tight_gaps.all? { |g| (g - 200.0).abs < 1.0 }, tight_gaps.inspect)
+# Раньше при 4:3 узкий фасад занимал четверть ширины кадра — это и был
+# «большой отступ». Теперь пустых полос нет ни у одного фасада.
+fixed = FacadeExport::Settings.new
+fixed.set_export('aspect', '4:3')
+fixed_plan = FacadeExport::Framing.plan(model.bounds, dirs, fixed.export)
+wide_share = fixed_plan[:projections][1][:width] * fixed_plan[:scale] / fixed_plan[:image_width]
+check('4:3: узкий фасад занимает лишь часть ширины кадра (старое поведение)',
+      wide_share < 0.75, wide_share)
+check('«По фасаду»: у узкого фасада кадр уже, полос нет',
+      tight_sizes[1][0] == (800 * tight[:scale]).round + 2 * tight[:gap], tight_sizes[1].inspect)
+
+# ---- фиксированные пропорции: кадр ровно такой, какой выбрали
+settings_43 = FacadeExport::Settings.new
+settings_43.set_export('aspect', '4:3')
+plan = FacadeExport::Framing.plan(model.bounds, dirs, settings_43.export)
 projections = plan[:projections]
 check('Кадр 4:3 -> 9999×7499', plan[:image_width] == 9999 && plan[:image_height] == 7499,
       [plan[:image_width], plan[:image_height]].inspect)
+check('Размеры кадра не зависят от фасада (4:3)',
+      FacadeExport::Framing.frame_sizes(plan, 4).uniq.length == 1,
+      FacadeExport::Framing.frame_sizes(plan, 4).inspect)
 check('Зазор 2 % от 9999 = 200 px', plan[:gap] == 200, plan[:gap])
 check('Проекции Y-фасадов: ширина 1200',
       (projections[0][:width] - 1200).abs < 1e-6 && (projections[2][:width] - 1200).abs < 1e-6,
@@ -266,6 +332,7 @@ cams = dirs.each_with_index.map do |d, i|
   FacadeExport::Framing.build_camera(model.bounds, d, projections[i], plan[:scale],
                                      plan[:image_width], plan[:image_height], plan[:gap], true)
 end
+check('4:3: кадр один на все фасады', plan[:sizes].nil?)
 check('Камеры: параллельная проекция', cams.all? { |c| c.perspective? == false })
 check('Камеры: одинаковая высота кадра у всех фасадов', cams.map(&:height).uniq.length == 1,
       cams.map(&:height).inspect)
@@ -366,9 +433,11 @@ bounds_all, _scope = FacadeExport::Framing.content_bounds(model_hidden)
 check('Видимая геометрия учитывается целиком', (bounds_all.max.x - 50_100).abs < 1e-6,
       bounds_all.max.to_a.inspect)
 
-# Высокий объект (башня)
+# Высокий объект (башня) — фиксированные пропорции 4:3
 tower = box_points(400, 400, 2000)
-plan_v = FacadeExport::Framing.plan(tower, dirs, FacadeExport.settings.export)
+settings_43v = FacadeExport::Settings.new
+settings_43v.set_export('aspect', '4:3')
+plan_v = FacadeExport::Framing.plan(tower, dirs, settings_43v.export)
 check('Высокий объект: 9999 по вертикали (7499×9999)',
       plan_v[:image_width] == 7499 && plan_v[:image_height] == 9999,
       [plan_v[:image_width], plan_v[:image_height]].inspect)
@@ -768,10 +837,22 @@ check('Все файлы непустые', result.files.all? { |f| File.size(f)
 
 writes = view.writes
 check('Записей изображений: 16', writes.length == 16)
-check('Размер не зависит от окна просмотра: ширина 9999',
-      writes.all? { |w| w[:width] == 9999 }, writes.map { |w| w[:width] }.uniq.inspect)
-check('Кадр 4:3: высота 7499',
-      writes.all? { |w| w[:height] == 7499 }, writes.map { |w| w[:height] }.uniq.inspect)
+# Кадр «по фасаду»: длинная сторона большого фасада — 9999, размеры свои
+# у каждого фасада (и одинаковые внутри фасада, для всех карт).
+check('Размер не зависит от окна просмотра: длинная сторона 9999',
+      writes.map { |w| [w[:width], w[:height]].max }.max == 9999,
+      writes.map { |w| [w[:width], w[:height]] }.uniq.inspect)
+check('Кадр «по фасаду»: полей нет — размеры кратны содержимому',
+      writes.map { |w| [w[:width], w[:height]] }.uniq.length == 2,
+      writes.map { |w| [w[:width], w[:height]] }.uniq.inspect)
+same_size = (1..4).all? do |n|
+  sizes = %w[Текстура Линии Тени Окна].map do |t|
+    w = writes.find { |item| item[:path].include?("Фасад_#{n}_#{t}.png") }
+    w ? [w[:width], w[:height]] : nil
+  end.compact
+  sizes.length == 4 && sizes.uniq.length == 1
+end
+check('Карты одного фасада одного размера', same_size)
 check('Сглаживание выключено', writes.all? { |w| w[:antialias] == false })
 check('Прозрачный фон включён', writes.all? { |w| w[:transparent] == true })
 check('Множитель линий 0.3', writes.all? { |w| (w[:scale_factor] - 0.3).abs < 1e-9 })
@@ -863,9 +944,12 @@ check_close('Фасад 2 смотрит на восток (+X)', facade_cams[1]
 check_close('Фасад 3 смотрит на юг (-Y)', facade_cams[2].direction.y, -1.0, 1e-6)
 check_close('Фасад 4 смотрит на запад (-X)', facade_cams[3].direction.x, -1.0, 1e-6)
 facade_cams.each_with_index do |c, i|
+  # Зазор в пикселях: высота кадра в единицах модели -> пиксели этого кадра.
+  shot = write_for(writes, i + 1, 'Текстура')
+  px_per_unit = shot && c.height.positive? ? shot[:height] / c.height : 1.0
   bottom = c.target.z - c.height / 2.0
   check_close("Фасад #{i + 1}: прижат к низу кадра (зазор 200 px)",
-              (0.0 - bottom) * (c.height.zero? ? 1.0 : 7499.0 / c.height), 200.0, 1.5)
+              (0.0 - bottom) * px_per_unit, 200.0, 1.5)
 end
 
 # --------------------------------------------------- 6. один фасад (4 файла)
@@ -1026,8 +1110,12 @@ check('Окружение скрыто на время экспорта',
 check('Окружение возвращено после экспорта',
       model.entities.none? { |e| e.hidden? },
       model.entities.map { |e| e.hidden? }.inspect)
-check('Кадр по группе: 4:3 (9999×7499)',
-      view.writes.all? { |w| w[:width] == 9999 && w[:height] == 7499 })
+# Кадр «по фасаду»: у большого фасада длинная сторона 9999, у остальных —
+# меньше, и ни у одного нет пустых полос.
+group_sizes = view.writes.map { |w| [w[:width], w[:height]] }.uniq
+check('Кадр по группе: «по фасаду», полей нет',
+      group_sizes.map(&:max).max == 9999 && group_sizes.length == 2,
+      group_sizes.inspect)
 cam_ctx = view.writes.first[:camera]
 check_close('Камера смотрит в группу (цель по её центру X)', cam_ctx.target.x, 1200.0, 1.0)
 check('Камера ближе, чем для всей модели', cam_ctx.height < 2000.0, cam_ctx.height)
@@ -1254,6 +1342,7 @@ FacadeExport::Exporter.new(
   :directory => OUT_ROOT, :base_name => 'Один', :facade_count => 1
 ).run
 height_off = view.writes.first[:camera].height
+width_off = view.writes.first[:width]
 check('Без подгонки масштаб по текущему фасаду', view.writes.length == 4,
       view.writes.length)
 
@@ -1265,9 +1354,10 @@ result_one = FacadeExport::Exporter.new(
   :directory => OUT_ROOT, :base_name => 'Один', :facade_count => 1
 ).run
 height_on = view.writes.first[:camera].height
-check('С подгонкой кадр больше по самому большому фасаду',
-      height_on > height_off * 4.0,
-      [height_off, height_on].inspect)
+width_on = view.writes.first[:width]
+check('С подгонкой масштаб по самому большому фасаду',
+      width_on < width_off / 4 && height_on > height_off,
+      [width_off, width_on, height_off, height_on].inspect)
 check('С подгонкой всё равно один фасад', result_one.files.length == 4,
       result_one.files.length)
 height_all = nil
@@ -1438,6 +1528,36 @@ check('После экспорта текстура возвращена',
       after.texture && after.texture.filename)
 check('После экспорта цвет возвращён',
       after.color.to_a[0, 3] == [180, 90, 70], after.color.to_a.inspect)
+
+# Отбеливание можно выключить в расширенных настройках — тогда на карте окон
+# текстуры обычных материалов остаются как есть (а стекло всё равно красится).
+clean_out
+model = new_model
+view = model.active_view
+fresh_settings
+FacadeExport.settings.set_export('whiten_textures', false)
+brick = model.materials['Кирпич']
+brick_tex = Sketchup::Texture.new
+brick_tex.filename = '/textures/brick.jpg'
+brick.texture = brick_tex
+result_whiten_off = FacadeExport::Exporter.new(
+  :model => model, :view => view, :settings => FacadeExport.settings,
+  :directory => OUT_ROOT, :base_name => 'БезБелого', :facade_count => 1
+).run
+check('Отбеливание выключено: экспорт проходит', result_whiten_off.errors.empty?,
+      result_whiten_off.errors.inspect)
+win_off = write_for(view.writes, 1, 'Окна')
+brick_off = win_off[:materials].find { |m| m[0] == 'Кирпич' }
+check('Отбеливание выключено: текстура не убрана',
+      brick_off && brick_off[3] == '/textures/brick.jpg', brick_off.inspect)
+check('Отбеливание выключено: цвет не заменён белым',
+      brick_off && brick_off[1][0, 3] == [180, 90, 70], brick_off && brick_off[1].inspect)
+check('Отбеливание выключено: стекло всё равно окрашено',
+      win_off[:materials].find { |m| m[0] == 'Стекло' }[1][0, 3] == [0, 255, 21],
+      win_off[:materials].find { |m| m[0] == 'Стекло' }.inspect)
+check('Отбеливание выключено: настройка сохраняется',
+      FacadeExport::Settings.new('export' => { 'whiten_textures' => false })
+                             .exp('whiten_textures') == false)
 
 # своя карта со стеклом: отбеливания нет, текстуры остаются
 clean_out
