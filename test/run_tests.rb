@@ -717,6 +717,21 @@ check('Перспектива: угол обзора пересчитан на �
 check('Перспектива: вертикальный угол остался 35°',
       (2.0 * Math.atan(Math.tan(persp_cam.fov * Math::PI / 360.0) / persp_ratio) * 180.0 / Math::PI - 35.0).abs < 1e-6,
       persp_cam.fov)
+# Перспективная камера должна показывать ту же область, что и параллельная:
+# расстояние = (высота кадра / 2) / tan(FOV / 2), иначе фасад «уезжает» и
+# по краям остаются поля (именно так было раньше — вписывался шар модели).
+frame_height_units = plan[:image_height] / plan[:scale]
+persp_distance = (persp_cam.eye - persp_cam.target).length
+check_close('Перспектива: расстояние до цели по высоте кадра',
+            persp_distance, frame_height_units / 2.0 / Math.tan(35.0 * Math::PI / 360.0), 1e-6)
+visible_height = 2.0 * persp_distance * Math.tan(35.0 * Math::PI / 360.0)
+check_close('Перспектива: на плоскости цели видно ровно высоту кадра',
+            visible_height, frame_height_units, 1e-6)
+visible_width = visible_height * persp_ratio
+check_close('Перспектива: ширина видимой области = ширине кадра',
+            visible_width, plan[:image_width] / plan[:scale], 1e-6)
+check('Габариты содержимого в плане: 1200 × 800 × 600',
+      plan[:span] == [1200.0, 800.0, 600.0], plan[:span].inspect)
 check('Исходная камера не изменена', persp.perspective? == true)
 
 fresh_settings

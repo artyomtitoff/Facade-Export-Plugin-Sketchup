@@ -148,10 +148,7 @@ module FacadeExport
         @result.scope = scope
         @result.image_width = plan[:image_width]
         @result.image_height = plan[:image_height]
-        FacadeExport.log(
-          "Кадр: #{plan[:image_width]}×#{plan[:image_height]} px " \
-          "(масштаб #{format('%.3f', plan[:scale].to_f)} px/ед., зазор #{plan[:gap]} px)"
-        )
+        log_frame(plan, cameras, parallel, visible)
 
         jobs = Exporter.output_jobs(@settings)
         total = jobs.length * @facade_count
@@ -203,6 +200,127 @@ module FacadeExport
     # --------------------------------------------------------------- private
 
     private
+
+    # Диагностика кадра в консоль Ruby: по этой строке видно, сколько
+    # пикселей занимает каждый фасад и какие поля вокруг него получились.
+    # Если в PNG поля больше — значит кадр снимается не так, как посчитан.
+    def log_frame(plan, cameras, parallel, visible)
+      scale = plan[:scale].to_f
+      mode = if visible
+               'видимый участок'
+             elsif parallel
+               'параллельная'
+             else
+               'перспектива'
+             end
+      FacadeExport.log(
+        "Кадр: #{plan[:image_width]}×#{plan[:image_height]} px, " \
+        "масштаб #{format('%.3f', scale)} px/ед., зазор #{plan[:gap]} px, " \
+        "проекция: #{mode}"
+      )
+      span = plan[:span]
+      if span && span.length == 3
+        FacadeExport.log(format('Габариты содержимого: %.1f × %.1f × %.1f ед.', *span))
+      end
+      return if visible || scale <= 0.0
+      projections = plan[:projections]
+      return if projections.nil? || projections.empty?
+      lines = projections.each_with_index.map do |p, i|
+        w = (p[:width].to_f * scale).round
+        h = (p[:height].to_f * scale).round
+        sides = ((plan[:image_width] - w) / 2.0).round
+        bottom = plan[:gap].to_i
+        top = plan[:image_height] - h - bottom
+        "  фасад #{i + 1}: #{w}×#{h} px, поля: слева/справа #{sides}, снизу #{bottom}, сверху #{top}"
+      end
+      FacadeExport.log("Кадр по фасадам:\n#{lines.join("\n")}")
+      log_probe(plan, cameras, scale)
+    end
+
+    # Самопроверка: маленький пробный снимок первого фасада и замер реальных
+    # полей в пикселях. В консоли видно, совпадает ли посчитанный кадр с тем,
+    # что реально нарисовал SketchUp. Если нет — поля в PNG даёт не расчёт.
+    #
+    # Пробный снимок маленький (500 px), на скорость экспорта не влияет.
+    def log_probe(plan, cameras, scale)
+      return unless defined?(Sketchup::ImageRep)
+      camera = cameras && cameras.first
+      return if camera.nil?
+      width = 500
+      height = [(width * plan[:image_height].to_f / [plan[:image_width].to_f, 1.0].max).round, 1].max
+      path = probe_path
+      return if path.nil?
+      @view.camera = camera
+      invalidate_view
+      ok = @view.write_image(
+        :filename => path, :width => width, :height => height,
+        :antialias => false, :transparent => true
+      )
+      return unless ok && File.exist?(path)
+      box = probe_content_box(path)
+      return if box.nil?
+      left, right, top, bottom_px = box
+      FacadeExport.log(
+        "Самопроверка (пробный снимок #{width}×#{height}): содержимое " \
+        "#{width - left - right}×#{height - top - bottom_px} px, поля: " \
+        "слева #{left}, справа #{right}, снизу #{bottom_px}, сверху #{top} " \
+        "(в масштабе кадра: слева/справа #{[(left * plan[:image_width].to_f / width).round, 0].max}, " \
+        "снизу #{[(bottom_px * plan[:image_height].to_f / height).round, 0].max})"
+      )
+    rescue StandardError => e
+      FacadeExport.log("Самопроверка кадра не удалась: #{e.message}")
+    ensure
+      cleanup_temp(path) if path
+    end
+
+    def probe_path
+      dir = begin
+        Sketchup.temp_dir
+      rescue StandardError
+        nil
+      end
+      return nil if dir.nil? || dir.to_s.empty?
+      File.join(dir, "facade_export_probe_#{Process.respond_to?(:pid) ? Process.pid : 'x'}.png")
+    rescue StandardError
+      nil
+    end
+
+    # Рамка содержимого на пробном снимке: [слева, справа, сверху, снизу].
+    # Считается по альфа-каналу (фон пробного снимка прозрачный).
+    def probe_content_box(path)
+      rep = Sketchup::ImageRep.new(path)
+      data = rep.data.to_s
+      width = rep.width.to_i
+      height = rep.height.to_i
+      bytes = [rep.bits_per_pixel.to_i / 8, 1].max
+      stride = width * bytes + rep.row_padding.to_i
+      return nil if width <= 0 || height <= 0 || data.empty? || bytes < 4
+      step_x = [width / 120, 1].max
+      step_y = [height / 90, 1].max
+      left = width
+      right = -1
+      top = height
+      bottom = -1
+      y = 0
+      while y < height
+        row = data.byteslice(y * stride, width * bytes)
+        if row && row.bytesize >= width * bytes
+          x = 0
+          while x < width
+            if row.getbyte(x * bytes + bytes - 1).to_i > 8
+              left = x if x < left
+              right = x if x > right
+              top = y if y < top
+              bottom = y if y > bottom
+            end
+            x += step_x
+          end
+        end
+        y += step_y
+      end
+      return nil if right < left || bottom < top
+      [left, width - 1 - right, top, height - 1 - bottom]
+    end
 
     # Переводит текущий вид в параллельную проекцию (если он перспективный),
     # сохраняя точку взгляда, цель и примерную композицию.
