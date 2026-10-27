@@ -3,19 +3,25 @@
 # Автор: Артем Титов (motivate_rt)
 #
 # Кнопка находит фасады в открытой группе (или во всей модели), показывает
-# окно с упрощёнными превью, ждёт выбора фасадов, соотношений сторон и имён,
-# а затем прогоняет обычный экспорт — по одной камере и одной секущей
-# плоскости на фасад.
+# окно со схемой здания сверху, а затем прогоняет обычный экспорт — по одной
+# камере и одной секущей плоскости на фасад.
 #
-# Временные сцены и плоскости удаляются после экспорта
-# (настройка auto.delete_scenes); состояние разрезов пользователя
-# возвращается как было.
+# Порядок важен для скорости и для надёжности:
+#   1. после кнопки — только быстрый анализ и окно (без превью фасадов);
+#   2. пользователь отмечает фасады, жмёт «Экспортировать»;
+#   3. ПЕРВЫМ делом — окно сохранения (оно не ждёт никаких расчётов);
+#   4. камеры, плоскости и съёмка — уже после выбора папки;
+#   5. окно с отчётом появляется всегда, даже если что-то упало.
+#
+# Сцены по умолчанию не создаются: пока они временные, они не нужны.
+# Если в настройках включено «оставлять сцены», они создаются ПОСЛЕ того,
+# как файлы записаны, — сбой со сценами уже не может испортить результат.
 
 module FacadeExport
   module AutoExport
     module_function
 
-    # Нажатие кнопки: анализ модели и окно со списком фасадов.
+    # Нажатие кнопки: быстрый анализ модели и окно со схемой.
     def start
       model = Sketchup.active_model
       if model.nil?
@@ -28,7 +34,6 @@ module FacadeExport
         return nil
       end
 
-      # Один анализ на всё окно: повторно геометрию не обходим.
       detector = AutoFacades.new(model, settings)
       result = begin
         detector.detect
@@ -43,27 +48,25 @@ module FacadeExport
 
       @detector = detector
       @facades = result[:facades]
-      @settings = settings
-      @payload = build_payload(result)
+      @payload = build_payload(result, settings)
+      FacadeExport.log("Авто-фасады: найдено #{@facades.length} фасадов " \
+                       "(#{result[:scope] == :context ? 'открытая группа' : 'вся модель'})")
       Dialogs.show_auto_facades(@payload)
       @payload
     end
 
-    # Данные для окна: превью фасадов, контур здания, соотношения сторон.
-    def build_payload(result)
-      settings = FacadeExport.settings
-      longest = settings.exp('width').to_i
+    # Данные для окна: схема сверху, список фасадов, соотношения сторон.
+    # Никаких превью фасадов — только схема и подписи.
+    def build_payload(result, settings)
       {
         'scope' => result[:scope].to_s,
-        'scopeText' => result[:scope] == :context ? 'открытая группа' : 'вся модель',
-        'plan' => result[:plan] || { 'grid' => 32, 'cells' => [] },
+        'plan' => result[:plan] || { 'grid' => AutoFacades::PLAN_GRID, 'cells' => [] },
         'aspects' => Config::AUTO_ASPECTS.keys.map do |key|
           label = key == Config::AUTO_DEFAULT_ASPECT ? "#{key} (по умолчанию)" : key
           [key, label]
         end,
         'defaultAspect' => settings.auto_val('aspect').to_s,
-        'longestSide' => longest,
-        'minSide' => Config::MIN_IMAGE_SIDE,
+        'longestSide' => settings.exp('width').to_i,
         'deleteScenes' => settings.auto_val('delete_scenes') ? true : false,
         'cutSections' => settings.auto_val('cut_sections') ? true : false,
         'baseName' => FacadeExport.model_base_name(Sketchup.active_model),
@@ -79,8 +82,7 @@ module FacadeExport
         'compass' => facade.page_name.to_s.split('—').last.to_s.strip,
         'aspect' => facade.aspect,
         'selected' => facade.selected ? true : false,
-        'normal' => [facade.normal.x.round(4), facade.normal.y.round(4)],
-        'polygons' => facade.polygons
+        'segment' => facade.segment
       }
     end
 
@@ -102,73 +104,94 @@ module FacadeExport
       end
 
       settings = FacadeExport.settings
-      detector.build_cameras!(selected)
-      # Фасад без камеры не снимаем — и в именах файлов его тоже нет.
-      selected = selected.select(&:camera)
-      if selected.empty?
-        UI.messagebox('Не удалось построить камеры фасадов.')
-        return nil
-      end
 
+      # Окно сохранения — сразу: камеры и плоскости считаются потом.
       destination = Dialogs.ask_destination(settings, @payload['baseName'])
       return nil if destination.nil?
 
       settings.set_export('last_directory', destination[:directory])
       settings.save
 
-      labels = selected.map { |f| f.name }
-      return nil unless confirm_overwrite(destination, labels)
-
-      run(detector, selected, destination, labels)
-    end
-
-    # Собственно экспорт: плоскости -> сцены -> обычный движок -> уборка.
-    def run(detector, facades, destination, labels)
-      settings = FacadeExport.settings
-      model = Sketchup.active_model
-
-      # Плоскости и сцены создаются отдельной операцией, чтобы в журнале
-      # «Отменить» это выглядело одним действием. Сам экспорт работает
-      # в своей служебной операции, которую в конце отменяет.
-      with_operation(model, 'Автоматический вывод фасада') do
-        detector.create_planes!(facades)
-        detector.create_scenes!(facades)
+      detector.build_cameras!(selected)
+      selected = selected.select(&:camera)
+      if selected.empty?
+        UI.messagebox('Не удалось построить камеры фасадов.')
+        return nil
       end
 
-      exporter = Exporter.new(
-        :model     => model,
-        :view      => model.active_view,
-        :settings  => settings,
-        :directory => destination[:directory],
-        :base_name => destination[:base_name],
-        :facades   => selected,
-        :auto      => detector,
-        :labels    => selected.map(&:name)
-      )
+      return nil unless confirm_overwrite(destination, selected.map(&:name))
 
-      keep_scenes = false
+      run(detector, selected, destination)
+    end
+
+    # Собственно экспорт: плоскости -> съёмка -> (при желании) сцены -> уборка.
+    def run(detector, facades, destination)
+      settings = FacadeExport.settings
+      model = Sketchup.active_model
+      view = model.active_view
+      # Сцены нужны только если их оставляют в модели: пока они временные,
+      # создавать их бессмысленно — это лишнее время.
+      keep_scenes = settings.auto_val('create_scenes') && !settings.auto_val('delete_scenes')
+
+      # Камера пользователя запоминается до всего остального и возвращается
+      # в любом случае — даже если экспорт упал.
+      detector.snapshot_camera(view)
+
       result = nil
+      error = nil
       begin
-        result = exporter.run
-      rescue ExportError => e
-        UI.messagebox(e.message)
-      rescue StandardError => e
-        FacadeExport.log("Авто-фасады: ошибка экспорта (#{e.message})")
-        UI.messagebox("Ошибка экспорта: #{e.message}")
-      ensure
-        keep_scenes = !settings.auto_val('delete_scenes') &&
-                      facades.any? { |f| !f.page.nil? }
-        unless keep_scenes
-          with_operation(model, 'Уборка сцен автоматического вывода') do
-            detector.cleanup!(false)
+        with_operation(model, 'Автоматический вывод фасада') do
+          detector.create_planes!(facades)
+        end
+
+        result = Exporter.new(
+          :model     => model,
+          :view      => view,
+          :settings  => settings,
+          :directory => destination[:directory],
+          :base_name => destination[:base_name],
+          :facades   => facades,
+          :auto      => detector,
+          :labels    => facades.map(&:name)
+        ).run
+
+        # Сцены — только если их оставляют, и только после записи файлов.
+        if keep_scenes && !result.files.empty?
+          with_operation(model, 'Сцены автоматического вывода') do
+            detector.create_scenes!(facades)
           end
         end
-        detector.cleanup!(keep_scenes) if keep_scenes
+      rescue ExportError => e
+        error = e.message
+      rescue StandardError => e
+        error = "Ошибка экспорта: #{e.message}"
+        FacadeExport.log("Авто-фасады: #{e.message}\n#{e.backtrace.first(10).join("\n")}")
+      ensure
+        with_operation(model, 'Уборка автоматического вывода') do
+          detector.cleanup!(keep_scenes && result && !result.files.empty?)
+        end
+        detector.restore_camera(view)
+        view.invalidate if view.respond_to?(:invalidate)
         close_dialog
       end
 
-      Dialogs.show_report(result, facades.length) if result && settings.exp('show_report')
+      report(result, facades.length, error)
       result
+    end
+
+    # Отчёт показывается всегда: пользователь должен видеть, что произошло.
+    def report(result, count, error)
+      if error
+        UI.messagebox(error)
+        return
+      end
+      return if result.nil?
+      settings = FacadeExport.settings
+      if settings.exp('show_report') || !result.errors.empty? || result.files.empty?
+        Dialogs.show_report(result, count)
+      end
+    rescue StandardError => e
+      FacadeExport.log("Авто-фасады: отчёт не показан (#{e.message})")
     end
 
     # ------------------------------------------------------------- служебное
@@ -193,7 +216,7 @@ module FacadeExport
       chosen = {}
       Array(data['facades']).each do |item|
         index = item['index'].to_i
-        next unless item['selected'] || item['selected'] == 'true'
+        next unless item['selected'] == true || item['selected'] == 'true'
         chosen[index] = item
       end
       result = []

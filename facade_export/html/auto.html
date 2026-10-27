@@ -12,7 +12,8 @@
     --muted: #6b7280;
     --accent: #1f6feb;
     --accent-dark: #1857bd;
-    --danger: #c0392b;
+    --wall: #e03131;
+    --wall-off: #b9c1cc;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -24,7 +25,7 @@
 
   header {
     flex: 0 0 auto;
-    padding: 12px 18px 12px 18px;
+    padding: 12px 18px 11px 18px;
     background: var(--panel);
     border-bottom: 1px solid var(--line);
   }
@@ -32,62 +33,61 @@
   header p { margin: 0; color: var(--muted); font-size: 12px; }
 
   main {
-    flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
-    padding: 14px 18px 20px 18px;
+    flex: 1 1 auto; min-height: 0;
+    display: flex; gap: 14px; align-items: stretch;
+    padding: 12px 18px 14px 18px;
   }
 
-  /* Карточка фасада: слева превью фасада, справа разрез-схема сверху. */
-  .facade {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 12px 14px 14px 14px;
-    margin-bottom: 12px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 16px;
+  /* Слева — схема здания сверху. */
+  .plan-pane {
+    flex: 0 0 auto; width: 46%; min-width: 280px;
+    display: flex; flex-direction: column; gap: 6px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px;
   }
-  .facade.off { opacity: .55; }
-  .facade .side { display: flex; flex-direction: column; gap: 8px; }
-  .facade .preview {
-    width: 150px; height: 200px;
-    border: 1px solid var(--line); border-radius: 6px;
-    background: #fff; overflow: hidden;
-  }
-  .facade .plan {
-    width: 150px; height: 150px;
-    border: 1px solid var(--line); border-radius: 6px;
-    background: #fbfcfd; overflow: hidden;
-  }
-  .facade .caption { font-size: 11px; color: var(--muted); text-align: center; }
+  .plan-pane .canvas { flex: 1 1 auto; min-height: 0; }
+  .plan-pane .canvas svg { width: 100%; height: 100%; display: block; }
+  .plan-pane .caption { font-size: 11px; color: var(--muted); text-align: center; }
 
-  .facade .body { flex: 1 1 320px; min-width: 280px; display: flex; flex-direction: column; gap: 10px; }
-  .head { display: flex; align-items: center; gap: 10px; }
-  .head label.title { font-weight: 600; font-size: 13px; }
-  .head .num {
-    display: inline-block; min-width: 22px; height: 22px; line-height: 20px;
-    text-align: center; border-radius: 11px; border: 1px solid var(--line);
-    background: #f7f8fa; color: var(--muted); font-size: 11px;
+  /* Справа — компактный список фасадов. */
+  .list-pane {
+    flex: 1 1 auto; min-width: 0;
+    display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    overflow: hidden;
   }
-  .head .compass { color: var(--muted); font-size: 12px; }
+  .list-pane .head, .facade {
+    display: grid;
+    grid-template-columns: 44px minmax(90px, 1fr) 104px 96px;
+    gap: 8px; align-items: center;
+  }
+  .list-pane .head {
+    padding: 7px 10px; border-bottom: 1px solid var(--line);
+    font-size: 11px; color: var(--muted);
+  }
+  .list-pane .rows { flex: 1 1 auto; overflow-y: auto; }
 
-  .row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
-  .field { display: flex; flex-direction: column; gap: 4px; }
-  .field label { font-size: 12px; color: var(--muted); }
+  .facade { padding: 7px 10px; border-bottom: 1px solid #eef0f3; cursor: pointer; }
+  .facade.off { opacity: .5; }
+  .badge {
+    width: 26px; height: 26px; line-height: 24px; border-radius: 13px;
+    text-align: center; font-size: 12px; font-weight: 600;
+    border: 2px solid var(--wall); background: var(--wall); color: #fff;
+  }
+  .facade.off .badge { border-color: var(--wall-off); background: #fff; color: var(--muted); }
   input[type="text"], select {
-    font: inherit; padding: 6px 8px; border: 1px solid var(--line);
-    border-radius: 6px; background: #fff; color: var(--text); min-width: 180px;
+    font: inherit; padding: 4px 6px; border: 1px solid var(--line);
+    border-radius: 5px; background: #fff; color: var(--text); width: 100%;
   }
   input[type="text"]:focus, select:focus { outline: none; border-color: var(--accent); }
-  .px { color: var(--muted); font-size: 12px; padding-bottom: 8px; }
-  .check { display: flex; align-items: center; gap: 7px; cursor: pointer; }
-  .hint { color: var(--muted); font-size: 11.5px; }
+  .px { color: var(--muted); font-size: 11px; text-align: right; }
 
   footer {
     flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
     padding: 10px 18px; background: var(--panel); border-top: 1px solid var(--line);
   }
   footer .spacer { flex: 1 1 auto; }
+  footer .hint { max-width: 520px; color: var(--muted); font-size: 11.5px; }
   footer button {
     padding: 7px 16px; border-radius: 6px; border: 1px solid var(--line);
     background: #fff; color: var(--text); font: inherit; cursor: pointer;
@@ -97,9 +97,9 @@
     background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
   }
   footer button.primary:hover { background: var(--accent-dark); }
-  footer .hint { max-width: 520px; }
 
-  .empty { padding: 40px; text-align: center; color: var(--muted); }
+  .wall-hit { cursor: pointer; }
+  .badge-g { cursor: pointer; }
 </style>
 </head>
 <body>
@@ -109,7 +109,18 @@
   <p id="subtitle">Анализ модели…</p>
 </header>
 
-<main id="list"></main>
+<main>
+  <section class="plan-pane">
+    <div class="canvas" id="canvas"></div>
+    <div class="caption">Схема сверху — условная: только контур здания, без деталей.</div>
+  </section>
+  <section class="list-pane">
+    <div class="head">
+      <div>№</div><div>Имя фасада</div><div>Стороны</div><div>Размер</div>
+    </div>
+    <div class="rows" id="rows"></div>
+  </section>
+</main>
 
 <footer>
   <span class="hint" id="footnote"></span>
@@ -144,150 +155,157 @@
     return [Math.max(100, round(longest * a / b)), longest];
   }
 
-  /* --------------------------------------------------- превью фасада */
+  /* ------------------------------------------------ схема сверху «жучок» */
 
-  function facadeSvg(polygons) {
-    var parts = ['<svg viewBox="-40 -40 1080 1080" preserveAspectRatio="xMidYMid meet" ' +
-                 'width="100%" height="100%">'];
-    parts.push('<rect x="-40" y="-40" width="1080" height="1080" fill="#ffffff"/>');
-    (polygons || []).forEach(function (poly) {
-      if (!poly || poly.length < 3) return;
-      var pts = poly.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
-      parts.push('<polygon points="' + pts + '" fill="#e9eef5" stroke="#93a5bd" ' +
-                 'stroke-width="6" stroke-linejoin="round"/>');
-    });
-    parts.push('</svg>');
-    return parts.join('');
-  }
-
-  /* ------------------------------------- схема сверху: контур и фасад */
-
-  // Схема сверху — сетка занятых клеток (план здания). Внутренний двор
-  // остаётся пустым: это не «оболочка», а реальный контур.
-  function planSvg(plan, normal, index) {
-    var cells = (plan && plan.cells) || [];
-    var grid = (plan && plan.grid) || 32;
-    if (!cells.length) {
-      return '<svg viewBox="0 0 1000 1000" width="100%" height="100%"></svg>';
-    }
+  // Единственная схема на всё окно: серый контур здания (сетка занятых
+  // клеток, внутренний двор остаётся пустым) и красные линии стен — по одной
+  // на найденный фасад. Клик по стене или по её номеру включает/выключает
+  // фасад. Никаких превью фасадов — окно должно открываться мгновенно.
+  function planSvg() {
+    var plan = (data && data.plan) || {};
+    var cells = plan.cells || [];
+    var grid = Number(plan.grid) || 40;
     var cell = 1000 / grid;
-    var nx = normal ? normal[0] : 0;
-    var ny = normal ? -normal[1] : 1;   // в SVG ось Y смотрит вниз
-    var tx = -ny;
-    var ty = nx;
-
-    // Центры клеток: по ним ищем сторону фасада.
-    var centers = cells.map(function (c) {
-      return [(c[0] + 0.5) * cell, (c[1] + 0.5) * cell];
-    });
-    var dots = centers.map(function (p) { return p[0] * nx + p[1] * ny; });
-    var ts = centers.map(function (p) { return p[0] * tx + p[1] * ty; });
-    var dmax = Math.max.apply(null, dots);
-    var dmin = Math.min.apply(null, dots);
-    var tmax = Math.max.apply(null, ts);
-    var tmin = Math.min.apply(null, ts);
-    var tol = Math.max(cell * 1.6, (dmax - dmin) * 0.05);
-
-    var sideTs = [];
-    ts.forEach(function (t, i) { if (dots[i] >= dmax - tol) sideTs.push(t); });
-    var from = Math.min.apply(null, sideTs.length ? sideTs : [tmin]);
-    var to = Math.max.apply(null, sideTs.length ? sideTs : [tmax]);
-    var span = Math.max(1, tmax - tmin);
-    var pad = span * 0.08;
-    from -= pad;
-    to += pad;
-    var mid = (from + to) / 2;
-    // Стрелка — на середине самого длинного сплошного участка стены:
-    // у здания с двором она не «висит» над проёмом.
-    var anchor = mid;
-    var sorted = sideTs.slice().sort(function (p, q) { return p - q; });
-    var runStart = null;
-    var runEnd = null;
-    var bestStart = null;
-    var bestEnd = null;
-    sorted.forEach(function (t) {
-      if (runStart === null) { runStart = t; runEnd = t; }
-      else if (t - runEnd <= cell * 1.5) { runEnd = t; }
-      else {
-        if (bestStart === null || runEnd - runStart > bestEnd - bestStart) {
-          bestStart = runStart; bestEnd = runEnd;
-        }
-        runStart = t; runEnd = t;
-      }
-    });
-    if (runStart !== null && (bestStart === null || runEnd - runStart > bestEnd - bestStart)) {
-      bestStart = runStart; bestEnd = runEnd;
-    }
-    if (bestStart !== null) anchor = (bestStart + bestEnd) / 2;
-    var offset = cell * 1.4 + (dmax - dmin) * 0.04;
-
-    function point(t, d) { return [tx * t + nx * d, ty * t + ny * d]; }
-    var a = point(from, dmax);
-    var b = point(to, dmax);
-    var tip = point(anchor, dmax + offset);
-    var tail = point(anchor, dmax + offset * 1.9);
-
     var svg = [];
-    svg.push('<svg viewBox="-260 -260 1520 1520" width="100%" height="100%">');
-    svg.push('<defs><marker id="arw' + index + '" viewBox="0 0 10 10" refX="8" refY="5" ' +
-             'markerWidth="6" markerHeight="6" orient="auto-start-reverse">' +
-             '<path d="M 0 0 L 10 5 L 0 10 z" fill="#e03131"/></marker></defs>');
+    svg.push('<svg viewBox="-70 -70 1140 1140" preserveAspectRatio="xMidYMid meet">');
+    svg.push('<rect x="-70" y="-70" width="1140" height="1140" fill="#ffffff"/>');
+
+    // Контур здания: каждая клетка — небольшой квадрат с общей обводкой.
     cells.forEach(function (c) {
       svg.push('<rect x="' + round(c[0] * cell) + '" y="' + round(c[1] * cell) +
-               '" width="' + round(cell + 0.6) + '" height="' + round(cell + 0.6) +
-               '" fill="#e9eef4" stroke="#c3cdda" stroke-width="2"/>');
+               '" width="' + round(cell + 0.8) + '" height="' + round(cell + 0.8) +
+               '" fill="#e6e9ee" stroke="#ccd3dc" stroke-width="2"/>');
     });
-    svg.push('<line x1="' + round(a[0]) + '" y1="' + round(a[1]) + '" x2="' + round(b[0]) +
-             '" y2="' + round(b[1]) + '" stroke="#e03131" stroke-width="26" stroke-linecap="round"/>');
-    svg.push('<line x1="' + round(tail[0]) + '" y1="' + round(tail[1]) + '" x2="' + round(tip[0]) +
-             '" y2="' + round(tip[1]) + '" stroke="#e03131" stroke-width="14" ' +
-             'marker-end="url(#arw' + index + ')"/>');
+
+    // Номера не должны наезжать друг на друга: у внутренних фасадов двора
+    // они оказываются рядом. Место под номер подбирается по очереди —
+    // сначала снаружи от стены, потом со сдвигом вдоль стены.
+    var placed = [];
+    function badgeSpot(mx, my, nx, ny) {
+      var base = 120;
+      var gapLimit = 84;
+      var tx = -ny;
+      var ty = nx;
+      for (var d = 0; d < 3; d++) {
+        for (var l = 0; l < 3; l++) {
+          var shift = l === 0 ? 0 : (l === 1 ? 96 : -96);
+          var cx = mx + nx * (base + d * 74) + tx * shift;
+          var cy = my + ny * (base + d * 74) + ty * shift;
+          var clash = placed.some(function (p) {
+            return Math.sqrt((p[0] - cx) * (p[0] - cx) + (p[1] - cy) * (p[1] - cy)) < gapLimit;
+          });
+          if (!clash) {
+            placed.push([cx, cy]);
+            return [cx, cy];
+          }
+        }
+      }
+      var fx = mx + nx * base;
+      var fy = my + ny * base;
+      placed.push([fx, fy]);
+      return [fx, fy];
+    }
+
+    state.forEach(function (item, i) {
+      var seg = item.segment;
+      if (!seg || !seg.from || !seg.to) return;
+      var a = seg.from, b = seg.to;
+      var nx = seg.normal ? seg.normal[0] : 0;
+      var ny = seg.normal ? seg.normal[1] : 1;   // уже в координатах SVG
+      var mx = (a[0] + b[0]) / 2;
+      var my = (a[1] + b[1]) / 2;
+      var color = item.selected ? '#e03131' : '#b9c1cc';
+      var width = item.selected ? 22 : 14;
+      var offset = 62;
+
+      // Сама стена.
+      svg.push('<line x1="' + round(a[0]) + '" y1="' + round(a[1]) + '" x2="' + round(b[0]) +
+               '" y2="' + round(b[1]) + '" stroke="' + color + '" stroke-width="' + width +
+               '" stroke-linecap="round"/>');
+      // Носик наружу: короткая стрелка от середины стены.
+      var ax = mx + nx * (offset * 0.55);
+      var ay = my + ny * (offset * 0.55);
+      var bx = mx + nx * offset;
+      var by = my + ny * offset;
+      svg.push('<line x1="' + round(ax) + '" y1="' + round(ay) + '" x2="' + round(bx) +
+               '" y2="' + round(by) + '" stroke="' + color + '" stroke-width="' +
+               (item.selected ? 11 : 8) + '" stroke-linecap="round"/>');
+      svg.push('<circle cx="' + round(bx) + '" cy="' + round(by) + '" r="' +
+               (item.selected ? 9 : 7) + '" fill="' + color + '"/>');
+
+      // Номер фасада — снаружи от стены.
+      var spot = badgeSpot(mx, my, nx, ny);
+      var cx = spot[0];
+      var cy = spot[1];
+      svg.push('<circle cx="' + round(cx) + '" cy="' + round(cy) + '" r="36" ' +
+               'fill="' + (item.selected ? '#e03131' : '#ffffff') + '" ' +
+               'stroke="' + (item.selected ? '#e03131' : '#b9c1cc') + '" stroke-width="6"/>');
+      svg.push('<text x="' + round(cx) + '" y="' + round(cy) + '" text-anchor="middle" ' +
+               'dominant-baseline="central" font-family="Segoe UI, Arial, sans-serif" ' +
+               'font-size="42" font-weight="600" ' +
+               'fill="' + (item.selected ? '#ffffff' : '#9aa3b0') + '">' +
+               esc(item.index) + '</text>');
+
+      // Кликабельные области: стена (широкая прозрачная линия) и номер.
+      svg.push('<line class="wall-hit" data-index="' + i + '" x1="' + round(a[0]) +
+               '" y1="' + round(a[1]) + '" x2="' + round(b[0]) + '" y2="' + round(b[1]) +
+               '" stroke="transparent" stroke-width="46" stroke-linecap="round"/>');
+      svg.push('<circle class="badge-g" data-index="' + i + '" cx="' + round(cx) +
+               '" cy="' + round(cy) + '" r="46" fill="transparent"/>');
+    });
+
     svg.push('</svg>');
     return svg.join('');
   }
 
-  /* ------------------------------------------------------------- отрисовка */
+  function renderPlan() {
+    document.getElementById('canvas').innerHTML = planSvg();
+    document.querySelectorAll('.wall-hit, .badge-g').forEach(function (node) {
+      node.addEventListener('click', function () {
+        toggle(Number(node.getAttribute('data-index')));
+      });
+    });
+  }
 
-  function render() {
-    var list = document.getElementById('list');
-    if (!data || !state.length) {
-      list.innerHTML = '<div class="empty">Фасады не найдены.</div>';
-      return;
-    }
+  /* --------------------------------------------------- список фасадов */
+
+  function renderRows() {
     var html = '';
     state.forEach(function (item, i) {
-      var facade = data.facades[i];
       var px = pixels(item.aspect, data.longestSide);
       html += '<div class="facade' + (item.selected ? '' : ' off') + '" data-index="' + i + '">';
-      html += '<div class="side">';
-      html += '<div class="preview">' + facadeSvg(facade.polygons) + '</div>';
-      html += '<div class="caption">Фасад ' + esc(facade.index) + '</div>';
-      html += '</div>';
-      html += '<div class="side">';
-      html += '<div class="plan">' + planSvg(data.plan, facade.normal, i) + '</div>';
-      html += '<div class="caption">Схема сверху</div>';
-      html += '</div>';
-      html += '<div class="body">';
-      html += '<div class="head">';
-      html += '<label class="check"><input type="checkbox" data-role="selected"' +
-              (item.selected ? ' checked' : '') + '><span class="num">' + esc(facade.index) +
-              '</span></label>';
-      html += '<span class="compass">' + esc(facade.compass || '') + '</span>';
-      html += '</div>';
-      html += '<div class="row">';
-      html += '<div class="field"><label>Имя фасада</label>' +
-              '<input type="text" data-role="name" maxlength="60" value="' +
+      html += '<div><div class="badge" data-role="toggle">' + esc(item.index) + '</div></div>';
+      html += '<div><input type="text" data-role="name" maxlength="60" value="' +
               esc(item.name) + '"></div>';
-      html += '<div class="field"><label>Соотношение сторон</label><select data-role="aspect">' +
-              aspectOptions(item.aspect) + '</select></div>';
-      html += '<div class="px" data-role="px">' + px[0] + ' × ' + px[1] + ' px</div>';
+      html += '<div><select data-role="aspect">' + aspectOptions(item.aspect) + '</select></div>';
+      html += '<div class="px" data-role="px">' + px[0] + '×' + px[1] + '</div>';
       html += '</div>';
-      html += '<div class="hint">Сцена: ' + esc(item.name) + ' — ' +
-              esc(facade.compass || '') + '</div>';
-      html += '</div></div>';
     });
-    list.innerHTML = html;
-    bind();
+    document.getElementById('rows').innerHTML = html;
+
+    document.querySelectorAll('.facade').forEach(function (row) {
+      var index = Number(row.getAttribute('data-index'));
+      var item = state[index];
+      row.querySelector('[data-role="toggle"]').addEventListener('click', function (e) {
+        e.stopPropagation();
+        toggle(index);
+      });
+      row.querySelector('[data-role="name"]').addEventListener('input', function (e) {
+        item.name = e.target.value;
+      });
+      row.querySelector('[data-role="name"]').addEventListener('click', function (e) {
+        e.stopPropagation();
+      });
+      row.querySelector('[data-role="aspect"]').addEventListener('click', function (e) {
+        e.stopPropagation();
+      });
+      row.querySelector('[data-role="aspect"]').addEventListener('change', function (e) {
+        item.aspect = e.target.value;
+        var size = pixels(item.aspect, data.longestSide);
+        row.querySelector('[data-role="px"]').textContent = size[0] + '×' + size[1];
+      });
+      row.addEventListener('click', function () { toggle(index); });
+    });
   }
 
   function aspectOptions(current) {
@@ -301,40 +319,35 @@
     return html;
   }
 
-  function bind() {
-    document.querySelectorAll('.facade').forEach(function (card) {
-      var index = Number(card.getAttribute('data-index'));
-      var item = state[index];
-      var box = card.querySelector('[data-role="selected"]');
-      var name = card.querySelector('[data-role="name"]');
-      var aspect = card.querySelector('[data-role="aspect"]');
-      var px = card.querySelector('[data-role="px"]');
-      var hint = card.querySelector('.hint');
+  // Включение/выключение фасада: перерисовываются и схема, и список.
+  function toggle(index) {
+    var item = state[index];
+    if (!item) return;
+    item.selected = !item.selected;
+    renderPlan();
+    var row = document.querySelector('.facade[data-index="' + index + '"]');
+    if (row) row.classList.toggle('off', !item.selected);
+    updateFootnote();
+  }
 
-      box.addEventListener('change', function () {
-        item.selected = box.checked;
-        card.classList.toggle('off', !item.selected);
-        updateFootnote();
-      });
-      name.addEventListener('input', function () {
-        item.name = name.value;
-        if (hint) hint.textContent = 'Сцена: ' + name.value;
-      });
-      aspect.addEventListener('change', function () {
-        item.aspect = aspect.value;
-        var size = pixels(item.aspect, data.longestSide);
-        if (px) px.textContent = size[0] + ' × ' + size[1] + ' px';
-      });
-    });
+  function render() {
+    if (!data || !state.length) {
+      document.getElementById('canvas').innerHTML =
+        '<div style="padding:40px;text-align:center;color:#6b7280">Схема недоступна.</div>';
+      document.getElementById('rows').innerHTML = '';
+      document.getElementById('footnote').textContent = 'Фасады не найдены.';
+      return;
+    }
+    renderPlan();
+    renderRows();
     updateFootnote();
   }
 
   function updateFootnote() {
     var chosen = state.filter(function (s) { return s.selected; }).length;
-    var parts = ['Выбрано фасадов: ' + chosen + ' из ' + state.length + '.'];
-    if (data && data.cutSections === false) parts.push('Секущие плоскости отключены в настройках.');
-    if (data && data.deleteScenes) parts.push('Сцены удаляются после экспорта.');
-    else if (data) parts.push('Сцены останутся в модели.');
+    var parts = ['Выбрано: ' + chosen + ' из ' + state.length + '.'];
+    if (data && data.cutSections === false) parts.push('Секущие плоскости отключены.');
+    parts.push(data && data.deleteScenes ? 'Сцены временные.' : 'Сцены останутся в модели.');
     document.getElementById('footnote').textContent = parts.join(' ');
   }
 
@@ -353,13 +366,14 @@
           index: f.index,
           selected: f.selected !== false,
           name: f.name || ('Фасад ' + f.index),
-          aspect: f.aspect || data.defaultAspect || '3:4'
+          aspect: f.aspect || data.defaultAspect || '3:4',
+          segment: f.segment || null
         };
       });
-      var subtitle = 'Найдено фасадов: ' + state.length + ' — ' +
+      document.getElementById('subtitle').textContent =
+        'Найдено фасадов: ' + state.length + ' — ' +
         (data.scope === 'context' ? 'открытая группа' : 'вся модель') +
-        '. Отметьте нужные, задайте имя и соотношение сторон.';
-      document.getElementById('subtitle').textContent = subtitle;
+        '. Нажмите на стену на схеме, чтобы включить или выключить фасад.';
       render();
     }
   };

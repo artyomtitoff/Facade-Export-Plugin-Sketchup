@@ -192,13 +192,21 @@ module FacadeExport
         push_auto_data(dialog, payload)
       end
 
+      # Ошибка внутри колбэка окна иначе просто пропадёт: SketchUp её не
+      # показывает. Поэтому здесь свой перехват — пользователь всегда узнает,
+      # что пошло не так.
       dialog.add_action_callback('export') do |_context, data|
         begin
           dialog.close
         rescue StandardError
           nil
         end
-        AutoExport.export(data)
+        begin
+          AutoExport.export(data)
+        rescue StandardError => e
+          FacadeExport.log("Авто-фасады: #{e.message}\n#{e.backtrace.first(10).join("\n")}")
+          UI.messagebox("Не удалось выполнить автоматический вывод: #{e.message}")
+        end
       end
 
       dialog.add_action_callback('cancel') do |_context, _data|
